@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# wsl-clipboard-png-bridge
+#
+# Poll the WSLg Wayland clipboard. When it contains image/bmp (as delivered by
+# Windows screenshot tools such as Snipping Tool / Win+Shift+S) but not
+# image/png, convert to PNG and publish the PNG to both the Wayland and the
+# X11 clipboards. This lets WSL-side tools that only accept image/png (notably
+# Claude Code — see anthropics/claude-code#25935) receive the screenshot.
+#
+# Why polling, not wl-paste --watch:
+#   WSLg ships the Weston compositor, which does not implement the wlroots
+#   data-control protocol required by wl-paste --watch. We fall back to a
+#   short-interval poll.
+#
+# Trust model:
+#   Anything the user can put on the Windows clipboard is treated as trusted
+#   local input. The script runs as the current user, writes temp files with
+#   0600 permissions (mktemp default), and feeds BMP bytes to ImageMagick with
+#   a 5-second timeout to bound memory/CPU on malformed input.
+
+set -euo pipefail
+
+# --- configuration --------------------------------------------------------
+
+# Poll interval in seconds. Accepts integer or decimal (e.g. 0.3, 1, 2.5).
+# Reject anything that isn't a positive number so the value can't become a
+# shell-injection vector when expanded into `sleep`.
+interval="${CLIPBOARD_WATCH_INTERVAL:-0.3}"
+if ! [[ "$interval" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    echo "wsl-clipboard-png-bridge: invalid CLIPBOARD_WATCH_INTERVAL='$interval'; using 0.3" >&2
+    interval="0.3"
+fi
+
+# Maximum seconds ImageMagick is allowed to spend on one conversion. Cheap
+# defence against a malformed or pathologically large BMP hanging the daemon.
+convert_timeout="${CLIPBOARD_CONVERT_TIMEOUT:-5}"
+if ! [[ "$convert_timeout" =~ ^[0-9]+$ ]]; then
+    convert_timeout="5"
+fi
+
+# --- single-instance guard ------------------------------------------------
+
+# Hold an advisory lock on a per-user lock file for the daemon's lifetime.
+# If another instance already owns it, exit quietly so duplicate invocations
+# (from multiple login shells or a second install.sh run) are harmless.
+LOCK_FILE="${WCPB_LOCK_FILE:-$HOME/.cache/wsl-clipboard-png-bridge.lock}"
+mkdir -p "$(dirname "$LOCK_FILE")"
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+    echo "wsl-clipboard-png-bridge: another instance is already running; exiting" >&2
+    exit 0
+fi
+
+# --- dependency check -----------------------------------------------------
+
+missing=()
+for cmd in wl-paste wl-copy xclip convert timeout mktemp flock; do
+    command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
+done
+if (( ${#missing[@]} > 0 )); then
+    printf 'wsl-clipboard-png-bridge: missing dependency: %s\n' "${missing[@]}" >&2
+    echo "install with: sudo apt install -y wl-clipboard xclip imagemagick coreutils" >&2
+    exit 1
+fi
+
+# --- temp-file hygiene ----------------------------------------------------
+
+tmp=""
+cleanup() {
+    if [ -n "$tmp" ] && [ -e "$tmp" ]; then
+        rm -f "$tmp"
+    fi
+}
+trap cleanup EXIT
+# On termination signals: run cleanup and exit explicitly — without the
+# explicit exit, bash resumes the loop after the trap handler returns.
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
+trap 'cleanup; exit 129' HUP
+
+# --- main loop ------------------------------------------------------------
+
+last=""
+while true; do
+    types="$(wl-paste --list-types 2>/dev/null || true)"
+
+    if [ "$types" != "$last" ]; then
+        last="$types"
+
+        has_png_wl=false
+        grep -qx "image/png" <<<"$types" && has_png_wl=true
+
+        has_bmp=false
+        grep -qx "image/bmp" <<<"$types" && has_bmp=true
+
+        x_targets="$(xclip -selection clipboard -t TARGETS -o 2>/dev/null || true)"
+        has_png_x=false
+        grep -qx "image/png" <<<"$x_targets" && has_png_x=true
+
+        if ! $has_png_x && { $has_png_wl || $has_bmp; }; then
+            tmp="$(mktemp --suffix=.png)"
+            ok=true
+
+            if $has_png_wl; then
+                wl-paste -t image/png 2>/dev/null >"$tmp" || ok=false
+            else
+                # Bounded conversion; ignore pipe errors but check final size.
+                if ! wl-paste -t image/bmp 2>/dev/null \
+                    | timeout "$convert_timeout" convert bmp:- png:- \
+                      >"$tmp" 2>/dev/null; then
+                    ok=false
+                fi
+            fi
+
+            if $ok && [ -s "$tmp" ]; then
+                if ! $has_png_wl; then
+                    wl-copy -t image/png <"$tmp" 2>/dev/null || true
+                fi
+                xclip -selection clipboard -t image/png -i "$tmp" 2>/dev/null || true
+            fi
+
+            rm -f "$tmp"
+            tmp=""
+
+            # Refresh cached types after our own write so we don't immediately
+            # re-enter the conversion branch on the next loop.
+            last="$(wl-paste --list-types 2>/dev/null || true)"
+        fi
+    fi
+
+    sleep "$interval"
+done
