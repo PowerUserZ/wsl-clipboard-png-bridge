@@ -96,7 +96,6 @@ clipboard_signature() {
     local mime="$1"
     wl-paste -t "$mime" 2>/dev/null | sha256sum 2>/dev/null | awk '{print $1}'
 }
-
 last_types=""
 last_signature=""
 signature_tick=0
