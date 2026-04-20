@@ -50,6 +50,20 @@ if ! [[ "$signature_every" =~ ^[1-9][0-9]*$ ]]; then
     signature_every="3"
 fi
 
+# Bound resource use while reading clipboard bytes for signatures so an
+# unbounded stream cannot stall the daemon loop.
+hash_timeout="${CLIPBOARD_HASH_TIMEOUT:-2}"
+if ! [[ "$hash_timeout" =~ ^[1-9][0-9]*$ ]]; then
+    echo "wsl-clipboard-png-bridge: invalid CLIPBOARD_HASH_TIMEOUT='$hash_timeout'; using 2" >&2
+    hash_timeout="2"
+fi
+
+hash_max_bytes="${CLIPBOARD_HASH_MAX_BYTES:-8388608}"
+if ! [[ "$hash_max_bytes" =~ ^[1-9][0-9]*$ ]]; then
+    echo "wsl-clipboard-png-bridge: invalid CLIPBOARD_HASH_MAX_BYTES='$hash_max_bytes'; using 8388608" >&2
+    hash_max_bytes="8388608"
+fi
+
 # --- single-instance guard ------------------------------------------------
 
 # Hold an advisory lock on a per-user lock file for the daemon's lifetime.
@@ -94,7 +108,12 @@ trap 'cleanup; exit 129' HUP
 
 clipboard_signature() {
     local mime="$1"
-    wl-paste -t "$mime" 2>/dev/null | sha256sum 2>/dev/null | awk '{print $1}'
+    timeout "$hash_timeout" bash -c '
+        wl-paste -t "$1" 2>/dev/null \
+            | head -c "$2" \
+            | sha256sum 2>/dev/null \
+            | awk '"'"'{print $1}'"'"'
+    ' _ "$mime" "$hash_max_bytes" 2>/dev/null || true
 }
 last_types=""
 last_signature=""
