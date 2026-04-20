@@ -16,7 +16,10 @@
 #   Anything the user can put on the Windows clipboard is treated as trusted
 #   local input. The script runs as the current user, writes temp files with
 #   0600 permissions (mktemp default), and feeds BMP bytes to ImageMagick with
-#   a 5-second timeout to bound memory/CPU on malformed input.
+#   a wall-clock timeout and explicit memory/map/disk limits to bound
+#   memory/CPU on malformed input. Every blocking clipboard IPC call is
+#   wrapped in `timeout "$io_timeout"` so a hung selection owner on either
+#   side cannot freeze the loop.
 
 set -euo pipefail
 
@@ -64,6 +67,30 @@ if ! [[ "$hash_max_bytes" =~ ^[1-9][0-9]*$ ]]; then
     hash_max_bytes="8388608"
 fi
 
+# Cap any single blocking clipboard IPC call (wl-paste / wl-copy / xclip).
+# Without this, a hung clipboard owner on either side can freeze the daemon.
+io_timeout="${CLIPBOARD_IO_TIMEOUT:-2}"
+if ! [[ "$io_timeout" =~ ^[1-9][0-9]*$ ]]; then
+    echo "wsl-clipboard-png-bridge: invalid CLIPBOARD_IO_TIMEOUT='$io_timeout'; using 2" >&2
+    io_timeout="2"
+fi
+
+# Hard resource ceilings for the ImageMagick conversion, in addition to the
+# wall-clock CLIPBOARD_CONVERT_TIMEOUT. Expressed in MiB and enforced via
+# `convert -limit memory/map/disk`. Defaults comfortably handle a 4K BMP
+# (~32 MiB raw) while bounding pathological inputs.
+convert_memory_mb="${CLIPBOARD_CONVERT_MEMORY_MB:-256}"
+if ! [[ "$convert_memory_mb" =~ ^[1-9][0-9]*$ ]]; then
+    echo "wsl-clipboard-png-bridge: invalid CLIPBOARD_CONVERT_MEMORY_MB='$convert_memory_mb'; using 256" >&2
+    convert_memory_mb="256"
+fi
+
+convert_disk_mb="${CLIPBOARD_CONVERT_DISK_MB:-512}"
+if ! [[ "$convert_disk_mb" =~ ^[1-9][0-9]*$ ]]; then
+    echo "wsl-clipboard-png-bridge: invalid CLIPBOARD_CONVERT_DISK_MB='$convert_disk_mb'; using 512" >&2
+    convert_disk_mb="512"
+fi
+
 # --- single-instance guard ------------------------------------------------
 
 # Hold an advisory lock on a per-user lock file for the daemon's lifetime.
@@ -80,7 +107,7 @@ fi
 # --- dependency check -----------------------------------------------------
 
 missing=()
-for cmd in wl-paste wl-copy xclip convert timeout mktemp flock sha256sum; do
+for cmd in wl-paste wl-copy xclip convert timeout mktemp flock sha256sum wc; do
     command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
 done
 if (( ${#missing[@]} > 0 )); then
@@ -106,24 +133,32 @@ trap 'cleanup; exit 129' HUP
 
 # --- main loop ------------------------------------------------------------
 
+# Signature = "<sha256 of first $hash_max_bytes bytes>-<total byte count>".
+# Mixing the byte count defeats prefix-only collisions where two large images
+# share an identical leading window (e.g. two 4K screenshots with the same
+# taskbar region). Returns empty string on any read failure — callers must
+# treat empty as "unknown, do not overwrite prior signature".
 clipboard_signature() {
     local mime="$1"
-    # Inner bash -c uses its own positional args ($1 for MIME type, $2 for the
-    # byte cap) plus an awk field reference ($1). None of these should expand
-    # in the outer shell, so the body stays single-quoted by design.
+    # Inner bash -c uses its own positional args ($1 MIME, $2 byte cap,
+    # $3 io timeout). Intentional single-quoting of the body; $1 in awk is
+    # an awk field reference. SC2016 is a false positive here.
     # shellcheck disable=SC2016
     timeout "$hash_timeout" bash -c '
-        wl-paste -t "$1" 2>/dev/null \
-            | head -c "$2" \
-            | sha256sum 2>/dev/null \
-            | awk '"'"'{print $1}'"'"'
-    ' _ "$mime" "$hash_max_bytes" 2>/dev/null || true
+        set -o pipefail
+        hash="$(timeout "$3" wl-paste -t "$1" 2>/dev/null | head -c "$2" | sha256sum | awk "{print \$1}")" || exit 1
+        size="$(timeout "$3" wl-paste -t "$1" 2>/dev/null | wc -c)" || exit 1
+        [ -n "$hash" ] || exit 1
+        printf "%s-%s\n" "$hash" "$size"
+    ' _ "$mime" "$hash_max_bytes" "$io_timeout" 2>/dev/null || echo ""
 }
+
 last_types=""
 last_signature=""
 signature_tick=0
+
 while true; do
-    types="$(wl-paste --list-types 2>/dev/null || true)"
+    types="$(timeout "$io_timeout" wl-paste --list-types 2>/dev/null || true)"
     signature="$last_signature"
 
     has_png_wl=false
@@ -148,37 +183,41 @@ while true; do
     fi
 
     # Trigger conversion not only when MIME types change, but also when image
-    # bytes change while types stay the same (common with back-to-back
-    # Win+Shift+S screenshots). We sample signatures periodically to reduce
-    # steady-state CPU overhead.
+    # bytes change while types stay the same (back-to-back Win+Shift+S
+    # screenshots). Empty signatures mean "read failed" — do not overwrite
+    # the last known-good value.
     if $should_hash; then
+        new_sig=""
         if $has_png_wl; then
-            signature="$(clipboard_signature "image/png")"
+            new_sig="$(clipboard_signature "image/png")"
         elif $has_bmp; then
-            signature="$(clipboard_signature "image/bmp")"
-        else
+            new_sig="$(clipboard_signature "image/bmp")"
+        fi
+        if [ -n "$new_sig" ]; then
+            signature="$new_sig"
+        elif ! $has_png_wl && ! $has_bmp; then
             signature=""
         fi
     fi
 
     if [ "$types" != "$last_types" ] || [ "$signature" != "$last_signature" ]; then
-        last_types="$types"
-        last_signature="$signature"
+        did_work=false
 
-        x_targets="$(xclip -selection clipboard -t TARGETS -o 2>/dev/null || true)"
-        has_png_x=false
-        grep -qx "image/png" <<<"$x_targets" && has_png_x=true
-
-        if ! $has_png_x && { $has_png_wl || $has_bmp; }; then
+        if $has_png_wl || $has_bmp; then
             tmp="$(mktemp --suffix=.png)"
             ok=true
 
             if $has_png_wl; then
-                wl-paste -t image/png 2>/dev/null >"$tmp" || ok=false
+                timeout "$io_timeout" wl-paste -t image/png 2>/dev/null >"$tmp" || ok=false
             else
-                # Bounded conversion; ignore pipe errors but check final size.
-                if ! wl-paste -t image/bmp 2>/dev/null \
-                    | timeout "$convert_timeout" convert bmp:- png:- \
+                # Bounded conversion: wall-clock timeout + memory/map/disk
+                # ceilings; ignore pipe errors but check final size.
+                if ! timeout "$io_timeout" wl-paste -t image/bmp 2>/dev/null \
+                    | timeout "$convert_timeout" convert \
+                        -limit memory "${convert_memory_mb}MiB" \
+                        -limit map    "${convert_memory_mb}MiB" \
+                        -limit disk   "${convert_disk_mb}MiB" \
+                        bmp:- png:- \
                       >"$tmp" 2>/dev/null; then
                     ok=false
                 fi
@@ -186,25 +225,32 @@ while true; do
 
             if $ok && [ -s "$tmp" ]; then
                 if ! $has_png_wl; then
-                    wl-copy -t image/png <"$tmp" 2>/dev/null || true
+                    timeout "$io_timeout" wl-copy -t image/png <"$tmp" 2>/dev/null || true
                 fi
-                xclip -selection clipboard -t image/png -i "$tmp" 2>/dev/null || true
+                timeout "$io_timeout" xclip -selection clipboard -t image/png -i "$tmp" 2>/dev/null || true
+                did_work=true
             fi
 
             rm -f "$tmp"
             tmp=""
+        fi
 
-            # Refresh cached types after our own write so we don't immediately
-            # re-enter the conversion branch on the next loop.
-            last_types="$(wl-paste --list-types 2>/dev/null || true)"
-
+        # Only advance state when we either finished work or the clipboard
+        # had no image for us to process. A failed conversion keeps the old
+        # state so the next poll retries instead of silently dropping the
+        # screenshot.
+        if $did_work; then
+            last_types="$(timeout "$io_timeout" wl-paste --list-types 2>/dev/null || true)"
+            refreshed=""
             if $has_png_wl; then
-                last_signature="$(clipboard_signature "image/png")"
+                refreshed="$(clipboard_signature "image/png")"
             elif $has_bmp; then
-                last_signature="$(clipboard_signature "image/bmp")"
-            else
-                last_signature=""
+                refreshed="$(clipboard_signature "image/bmp")"
             fi
+            [ -n "$refreshed" ] && last_signature="$refreshed"
+        elif ! $has_png_wl && ! $has_bmp; then
+            last_types="$types"
+            last_signature=""
         fi
     fi
 
