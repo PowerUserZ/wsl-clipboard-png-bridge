@@ -1,0 +1,36 @@
+name: Claude PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Claude review
+        uses: anthropics/claude-code-action@v1
+        with:
+          prompt: |
+            Review this pull request for correctness, security, and code quality.
+            Pay extra attention to:
+              - bash safety: quoting, `set -euo pipefail`, subshell vs command group,
+                signal handling, trap scope
+              - sentinel-based bashrc edits: data-loss paths if sentinels are partial
+              - env var validation: injection, 0/negative/decimal edge cases
+              - process control: flock, pgrep, pkill specificity, race conditions
+              - shellcheck gotchas (false positives allowed if justified inline)
+            Post findings as a single review comment with severity tags
+            (critical / high / medium / low / nit).
+          claude_args: "--max-turns 6"
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
