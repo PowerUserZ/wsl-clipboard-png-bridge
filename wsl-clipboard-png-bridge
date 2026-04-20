@@ -26,7 +26,7 @@ set -euo pipefail
 # Reject anything that isn't a positive number so the value can't become a
 # shell-injection vector when expanded into `sleep`.
 interval="${CLIPBOARD_WATCH_INTERVAL:-0.3}"
-if ! [[ "$interval" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+if ! awk -v v="$interval" 'BEGIN { exit !(v ~ /^[0-9]+([.][0-9]+)?$/ && v > 0) }'; then
     echo "wsl-clipboard-png-bridge: invalid CLIPBOARD_WATCH_INTERVAL='$interval'; using 0.3" >&2
     interval="0.3"
 fi
@@ -39,6 +39,15 @@ convert_timeout="${CLIPBOARD_CONVERT_TIMEOUT:-5}"
 if ! [[ "$convert_timeout" =~ ^[1-9][0-9]*$ ]]; then
     echo "wsl-clipboard-png-bridge: invalid CLIPBOARD_CONVERT_TIMEOUT='$convert_timeout'; using 5" >&2
     convert_timeout="5"
+fi
+
+# Compute clipboard content signatures every N polls when MIME types are
+# unchanged. This keeps back-to-back screenshot detection reliable while
+# reducing hashing overhead in steady-state polling loops.
+signature_every="${CLIPBOARD_SIGNATURE_EVERY:-3}"
+if ! [[ "$signature_every" =~ ^[1-9][0-9]*$ ]]; then
+    echo "wsl-clipboard-png-bridge: invalid CLIPBOARD_SIGNATURE_EVERY='$signature_every'; using 3" >&2
+    signature_every="3"
 fi
 
 # --- single-instance guard ------------------------------------------------
@@ -57,7 +66,7 @@ fi
 # --- dependency check -----------------------------------------------------
 
 missing=()
-for cmd in wl-paste wl-copy xclip convert timeout mktemp flock; do
+for cmd in wl-paste wl-copy xclip convert timeout mktemp flock sha256sum; do
     command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
 done
 if (( ${#missing[@]} > 0 )); then
@@ -83,18 +92,56 @@ trap 'cleanup; exit 129' HUP
 
 # --- main loop ------------------------------------------------------------
 
-last=""
+clipboard_signature() {
+    local mime="$1"
+    wl-paste -t "$mime" 2>/dev/null | sha256sum 2>/dev/null | awk '{print $1}'
+}
+
+last_types=""
+last_signature=""
+signature_tick=0
 while true; do
     types="$(wl-paste --list-types 2>/dev/null || true)"
+    signature="$last_signature"
 
-    if [ "$types" != "$last" ]; then
-        last="$types"
+    has_png_wl=false
+    grep -qx "image/png" <<<"$types" && has_png_wl=true
 
-        has_png_wl=false
-        grep -qx "image/png" <<<"$types" && has_png_wl=true
+    has_bmp=false
+    grep -qx "image/bmp" <<<"$types" && has_bmp=true
 
-        has_bmp=false
-        grep -qx "image/bmp" <<<"$types" && has_bmp=true
+    should_hash=false
+    if [ "$types" != "$last_types" ]; then
+        should_hash=true
+        signature_tick=0
+    elif $has_png_wl || $has_bmp; then
+        signature_tick=$((signature_tick + 1))
+        if (( signature_tick >= signature_every )); then
+            should_hash=true
+            signature_tick=0
+        fi
+    else
+        signature_tick=0
+        signature=""
+    fi
+
+    # Trigger conversion not only when MIME types change, but also when image
+    # bytes change while types stay the same (common with back-to-back
+    # Win+Shift+S screenshots). We sample signatures periodically to reduce
+    # steady-state CPU overhead.
+    if $should_hash; then
+        if $has_png_wl; then
+            signature="$(clipboard_signature "image/png")"
+        elif $has_bmp; then
+            signature="$(clipboard_signature "image/bmp")"
+        else
+            signature=""
+        fi
+    fi
+
+    if [ "$types" != "$last_types" ] || [ "$signature" != "$last_signature" ]; then
+        last_types="$types"
+        last_signature="$signature"
 
         x_targets="$(xclip -selection clipboard -t TARGETS -o 2>/dev/null || true)"
         has_png_x=false
@@ -127,7 +174,15 @@ while true; do
 
             # Refresh cached types after our own write so we don't immediately
             # re-enter the conversion branch on the next loop.
-            last="$(wl-paste --list-types 2>/dev/null || true)"
+            last_types="$(wl-paste --list-types 2>/dev/null || true)"
+
+            if $has_png_wl; then
+                last_signature="$(clipboard_signature "image/png")"
+            elif $has_bmp; then
+                last_signature="$(clipboard_signature "image/bmp")"
+            else
+                last_signature=""
+            fi
         fi
     fi
 
