@@ -15,6 +15,7 @@ SENTINEL_START="# >>> ${SCRIPT_NAME} (managed block; do not edit) >>>"
 SENTINEL_END="# <<< ${SCRIPT_NAME} <<<"
 
 RAW_BASE="${WCPB_RAW_BASE:-https://raw.githubusercontent.com/PowerUserZ/wsl-clipboard-png-bridge/main}"
+SOURCE_SCRIPT="$(dirname "$(readlink -f "$0")")/$SCRIPT_NAME"
 
 log() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m==> warning:\033[0m %s\n' "$*" >&2; }
@@ -25,9 +26,16 @@ die() { printf '\033[1;31m==> error:\033[0m %s\n' "$*" >&2; exit 1; }
 if ! { [ -r /proc/sys/kernel/osrelease ] && grep -qi "microsoft" /proc/sys/kernel/osrelease; }; then
     die "this installer only runs under WSL2 (detected non-WSL kernel)"
 fi
+if ! grep -qi "wsl2" /proc/sys/kernel/osrelease; then
+    die "this installer requires WSL2 (detected WSL1-compatible kernel string)"
+fi
 
 missing=()
-for cmd in wl-paste wl-copy xclip convert timeout flock mktemp curl; do
+required_cmds=(wl-paste wl-copy xclip convert timeout flock mktemp sha256sum)
+if [ ! -f "$SOURCE_SCRIPT" ]; then
+    required_cmds+=(curl)
+fi
+for cmd in "${required_cmds[@]}"; do
     command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
 done
 if (( ${#missing[@]} > 0 )); then
@@ -41,7 +49,6 @@ fi
 
 mkdir -p "$INSTALL_DIR" "$(dirname "$LOCK_PATH")"
 
-SOURCE_SCRIPT="$(dirname "$(readlink -f "$0")")/$SCRIPT_NAME"
 if [ -f "$SOURCE_SCRIPT" ]; then
     log "installing from local checkout"
     install -m 0755 "$SOURCE_SCRIPT" "$INSTALL_PATH"

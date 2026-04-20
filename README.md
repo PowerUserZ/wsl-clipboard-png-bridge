@@ -113,6 +113,7 @@ Environment variables, both optional:
 | ---------------------------- | ------- | ---------------------------------- |
 | `CLIPBOARD_WATCH_INTERVAL`   | `0.3`   | Poll interval in seconds. Must be a positive number; invalid values fall back to the default. |
 | `CLIPBOARD_CONVERT_TIMEOUT`  | `5`     | Maximum seconds each ImageMagick conversion may run before being killed. Must be a positive integer. |
+| `CLIPBOARD_SIGNATURE_EVERY`  | `3`     | When clipboard MIME types are unchanged, compute a content signature every N polls (positive integer). Lower = faster new-image detection, higher = lower CPU usage. |
 
 ## Security notes
 
