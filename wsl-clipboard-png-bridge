@@ -108,6 +108,10 @@ trap 'cleanup; exit 129' HUP
 
 clipboard_signature() {
     local mime="$1"
+    # Inner bash -c uses its own positional args ($1 for MIME type, $2 for the
+    # byte cap) plus an awk field reference ($1). None of these should expand
+    # in the outer shell, so the body stays single-quoted by design.
+    # shellcheck disable=SC2016
     timeout "$hash_timeout" bash -c '
         wl-paste -t "$1" 2>/dev/null \
             | head -c "$2" \
