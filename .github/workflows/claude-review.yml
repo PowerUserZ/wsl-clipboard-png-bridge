@@ -6,7 +6,7 @@ on:
 
 jobs:
   review:
-    uses: PowerUserZ/.github/.github/workflows/claude-review.yml@main
+    uses: PowerUserZ/.github/.github/workflows/claude-review.yml@e4cfe30ec8cef6dbf39fc91f27ee7914c7316b5e
     with:
       prompt: |
         Review this PR for correctness, security, and code quality.
