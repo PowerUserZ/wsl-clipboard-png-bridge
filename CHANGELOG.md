@@ -4,6 +4,45 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project uses [Semantic Versioning](https://semver.org/).
 
+## [0.1.2] — 2026-04-20
+
+### Fixed
+- **Stale X11 PNG no longer suppresses new Wayland BMP conversion.** The main
+  loop previously skipped conversion when X11 already held `image/png`, and
+  cached `last_types`/`last_signature` *before* the skipped work, so a fresh
+  BMP arriving on Wayland was lost on the next poll. Conversion now runs
+  whenever Wayland carries `image/bmp` or `image/png`, and the state cache
+  advances only after the work succeeds (or when the clipboard contains no
+  image to process).
+- **Clipboard signatures no longer confuse read failure with empty content.**
+  `clipboard_signature()` now runs its inner pipeline with `set -o pipefail`;
+  a failed `wl-paste` returns the empty string instead of the deterministic
+  `e3b0c442…` SHA-256-of-nothing hash. Callers refuse to cache empty
+  signatures, so a transient Wayland blip no longer poisons change-detection.
+- **Blocking clipboard IPC can no longer freeze the daemon.** Every
+  `wl-paste`, `wl-copy`, and `xclip` call site — including the reads inside
+  `clipboard_signature()` — is now wrapped in `timeout "$CLIPBOARD_IO_TIMEOUT"`
+  (default `2` seconds). A hung selection owner drops the current poll
+  instead of wedging the loop.
+- **ImageMagick conversion is bounded by memory, map, and disk limits** in
+  addition to the existing wall-clock timeout, via `convert -limit
+  memory/map/disk`. A pathological BMP can no longer OOM the daemon before
+  the wall-clock timer fires.
+- **Prefix-collision on large screenshots.** The content signature now mixes
+  the total clipboard byte length with the prefix SHA-256, so two 4K+ images
+  that share their first 8 MiB (e.g. identical taskbar region) no longer
+  collide and the second image is always detected.
+  `CLIPBOARD_HASH_MAX_BYTES` default stays at `8388608` (8 MiB); size mixing
+  closes the collision window without quadrupling per-poll I/O.
+
+### Added
+- `CLIPBOARD_IO_TIMEOUT` (default `2`) — wraps every blocking clipboard IPC.
+- `CLIPBOARD_CONVERT_MEMORY_MB` (default `256`) — `convert -limit memory/map`.
+- `CLIPBOARD_CONVERT_DISK_MB` (default `512`) — `convert -limit disk`.
+- `wc` added to the startup dependency check (used by the size-mixed
+  signature); already present on every Ubuntu/Debian base image via
+  `coreutils`.
+
 ## [0.1.1] — 2026-04-20
 
 ### Fixed
@@ -87,3 +126,4 @@ Initial public release.
 
 [0.1.0]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.0
 [0.1.1]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.1
+[0.1.2]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.2
