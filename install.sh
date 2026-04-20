@@ -64,26 +64,27 @@ else
         cat <<EOF
 # Installed by wsl-clipboard-png-bridge/install.sh. Remove the entire block
 # between the sentinel comments (or run uninstall.sh) to opt out.
+# Fire-and-forget spawn. The daemon itself holds an exclusive flock on
+# ~/.cache/${SCRIPT_NAME}.lock for its lifetime, so duplicate invocations
+# exit silently with no effect on this shell. We intentionally avoid
+# \`flock -n 9 || exit 0\` here because a \`{ ... }\` command group runs in
+# the parent shell, and the \`exit\` would terminate the login shell
+# whenever another daemon already held the lock (observed to crash Warp
+# for Windows as "Shell process exited prematurely").
 if command -v wl-paste >/dev/null 2>&1 && [ -x "\$HOME/.local/bin/$SCRIPT_NAME" ]; then
-    {
-        flock -n 9 || exit 0
-        nohup "\$HOME/.local/bin/$SCRIPT_NAME" >/dev/null 2>&1 &
-        disown
-    } 9>"\$HOME/.cache/${SCRIPT_NAME}.lock"
+    "\$HOME/.local/bin/$SCRIPT_NAME" >/dev/null 2>&1 &
+    disown
 fi
 EOF
         printf '%s\n' "$SENTINEL_END"
     } >>"$BASHRC"
 fi
 
-# --- start the daemon now (single-instance via flock) --------------------
+# --- start the daemon now ------------------------------------------------
 
-log "starting daemon"
-(
-    flock -n 9 || { log "daemon already running"; exit 0; }
-    nohup "$INSTALL_PATH" >/dev/null 2>&1 &
-    disown
-) 9>"$LOCK_PATH" || true
+log "starting daemon (duplicate spawns exit silently via the daemon's self-lock)"
+nohup "$INSTALL_PATH" >/dev/null 2>&1 &
+disown
 
 sleep 0.5
 if pgrep -f "$INSTALL_PATH" >/dev/null 2>&1; then
