@@ -32,9 +32,12 @@ if ! [[ "$interval" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
 fi
 
 # Maximum seconds ImageMagick is allowed to spend on one conversion. Cheap
-# defence against a malformed or pathologically large BMP hanging the daemon.
+# defense against a malformed or pathologically large BMP hanging the daemon.
+# Require a positive integer — `timeout 0` would fire immediately and break
+# every conversion silently.
 convert_timeout="${CLIPBOARD_CONVERT_TIMEOUT:-5}"
-if ! [[ "$convert_timeout" =~ ^[0-9]+$ ]]; then
+if ! [[ "$convert_timeout" =~ ^[1-9][0-9]*$ ]]; then
+    echo "wsl-clipboard-png-bridge: invalid CLIPBOARD_CONVERT_TIMEOUT='$convert_timeout'; using 5" >&2
     convert_timeout="5"
 fi
 

@@ -44,7 +44,11 @@ a clean inline-paste experience in Claude Code. If you want cross-app paste
 
 * WSL2 with WSLg (ships in Windows 11 and current Windows 10 builds)
 * Ubuntu / Debian-family distribution
-* Packages: `wl-clipboard xclip imagemagick coreutils util-linux`
+* Packages: `wl-clipboard xclip imagemagick coreutils util-linux curl`
+
+`curl` is only required for the one-shot installer; if you clone the repo and
+run `./install.sh` from inside it, you do not need `curl` because the installer
+copies the script from the local checkout.
 
 ## Install
 
@@ -121,8 +125,8 @@ Environment variables, both optional:
   (e.g. ImageTragick — CVE-2016-3714). This bridge converts BMP bytes with a
   `timeout 5` wrapper to bound memory / CPU on malformed input, and relies on
   Ubuntu's default `policy.xml` limits. If your threat model does not include
-  "local user pastes hostile BMP to their own clipboard", you can skip this
-  tool. The code is ~70 lines of bash — audit it before installing.
+  "a local user pastes a hostile BMP to their own clipboard", you can skip
+  this tool. The code is ~70 lines of bash — audit it before installing.
 * **No privilege escalation.** Install writes only under `$HOME`, and the
   installer never invokes `sudo` silently.
 
