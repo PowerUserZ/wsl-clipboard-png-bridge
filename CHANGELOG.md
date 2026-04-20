@@ -4,6 +4,28 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project uses [Semantic Versioning](https://semver.org/).
 
+## [0.1.3] — 2026-04-20
+
+### Fixed
+- **Transient `wl-copy` / `xclip` write failures no longer mark a screenshot
+  as successfully published.** The previous code set `did_work=true` as soon
+  as the PNG temp file existed, then swallowed the publish-step exit codes
+  with `|| true`. If both Wayland and X11 writes failed (clipboard-manager
+  crash, transient DBus / X errors, ...) the daemon still cached the new
+  signature and never retried — the screenshot was silently dropped.
+  Now `did_work` becomes true only when **at least one** of `wl-copy` /
+  `xclip` actually succeeded (or Wayland already held the PNG). If both
+  fail, the cache is not advanced, so the next poll converts and publishes
+  again.
+- **Post-conversion signature refresh now reads the new MIME.** After a
+  BMP → PNG conversion, the daemon correctly re-read the Wayland type list
+  into `last_types`, but then still called `clipboard_signature "image/bmp"`
+  based on the pre-conversion `has_bmp` flag. Since the clipboard now
+  advertises `image/png`, that BMP read returned empty, `last_signature`
+  stayed on the pre-write value, and the same PNG was re-published roughly
+  `CLIPBOARD_SIGNATURE_EVERY` polls later. The refresh now picks the MIME
+  from the **just-refreshed** `last_types` and hashes the current content.
+
 ## [0.1.2] — 2026-04-20
 
 ### Fixed
@@ -127,3 +149,4 @@ Initial public release.
 [0.1.0]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.0
 [0.1.1]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.1
 [0.1.2]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.2
+[0.1.3]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.3
