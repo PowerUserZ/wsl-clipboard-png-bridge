@@ -7,6 +7,12 @@ project uses [Semantic Versioning](https://semver.org/).
 ## [0.1.1] — 2026-04-20
 
 ### Fixed
+- **Back-to-back screenshot reliability.** The daemon previously processed
+  clipboard updates only when MIME types changed. Two consecutive screenshots
+  both exposed as `image/bmp` kept the same type list, so the second image
+  could be skipped. The loop now also tracks a content signature
+  (SHA-256 of clipboard image bytes), so new screenshots are detected even
+  when MIME types are unchanged.
 - **Critical — shell crash under Warp for Windows.** The bashrc auto-start
   block used a `{ ... } 9>lock` command group (not a subshell), so
   `flock -n 9 || exit 0` terminated the **parent** login shell whenever
@@ -24,12 +30,19 @@ project uses [Semantic Versioning](https://semver.org/).
   `timeout 0 convert …` return immediately and broke every conversion. The
   regex now requires a positive integer (`^[1-9][0-9]*$`) and logs a message
   on the fallback to `5`.
+- **Local installer path no longer requires `curl`.** `install.sh` now checks
+  for `curl` only when it needs to download from GitHub. Running `./install.sh`
+  from a cloned checkout works without `curl`, matching the README guidance.
 
 ### Changed
 - README: `Requirements` section now mentions `curl` (needed by the one-shot
   installer; not needed when running `./install.sh` from a local checkout).
 - README: minor wording / US-English consistency pass ("defense", threat-model
   sentence).
+- Performance tuning: clipboard content signatures are now sampled every
+  `CLIPBOARD_SIGNATURE_EVERY` polls (default `3`) when MIME types are
+  unchanged, reducing steady-state CPU overhead while still detecting
+  back-to-back screenshots.
 
 ## [0.1.0] — 2026-04-20
 

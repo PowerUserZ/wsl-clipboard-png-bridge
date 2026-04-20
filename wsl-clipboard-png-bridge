@@ -41,6 +41,15 @@ if ! [[ "$convert_timeout" =~ ^[1-9][0-9]*$ ]]; then
     convert_timeout="5"
 fi
 
+# Compute clipboard content signatures every N polls when MIME types are
+# unchanged. This keeps back-to-back screenshot detection reliable while
+# reducing hashing overhead in steady-state polling loops.
+signature_every="${CLIPBOARD_SIGNATURE_EVERY:-3}"
+if ! [[ "$signature_every" =~ ^[1-9][0-9]*$ ]]; then
+    echo "wsl-clipboard-png-bridge: invalid CLIPBOARD_SIGNATURE_EVERY='$signature_every'; using 3" >&2
+    signature_every="3"
+fi
+
 # --- single-instance guard ------------------------------------------------
 
 # Hold an advisory lock on a per-user lock file for the daemon's lifetime.
@@ -83,18 +92,59 @@ trap 'cleanup; exit 129' HUP
 
 # --- main loop ------------------------------------------------------------
 
-last=""
+last_types=""
+last_signature=""
+signature_tick=0
 while true; do
     types="$(wl-paste --list-types 2>/dev/null || true)"
+    signature="$last_signature"
 
-    if [ "$types" != "$last" ]; then
-        last="$types"
+    has_png_wl=false
+    grep -qx "image/png" <<<"$types" && has_png_wl=true
 
-        has_png_wl=false
-        grep -qx "image/png" <<<"$types" && has_png_wl=true
+    has_bmp=false
+    grep -qx "image/bmp" <<<"$types" && has_bmp=true
 
-        has_bmp=false
-        grep -qx "image/bmp" <<<"$types" && has_bmp=true
+    should_hash=false
+    if [ "$types" != "$last_types" ]; then
+        should_hash=true
+        signature_tick=0
+    elif $has_png_wl || $has_bmp; then
+        signature_tick=$((signature_tick + 1))
+        if (( signature_tick >= signature_every )); then
+            should_hash=true
+            signature_tick=0
+        fi
+    else
+        signature_tick=0
+        signature=""
+    fi
+
+    # Trigger conversion not only when MIME types change, but also when image
+    # bytes change while types stay the same (common with back-to-back
+    # Win+Shift+S screenshots). We sample signatures periodically to reduce
+    # steady-state CPU overhead.
+    if $should_hash; then
+        if $has_png_wl; then
+            signature="$(
+                wl-paste -t image/png 2>/dev/null \
+                    | sha256sum 2>/dev/null \
+                    | awk '{print $1}'
+            )"
+        elif $has_bmp; then
+            signature="$(
+                wl-paste -t image/bmp 2>/dev/null \
+                    | sha256sum 2>/dev/null \
+                    | awk '{print $1}'
+            )"
+        else
+            signature=""
+        fi
+    fi
+
+    if [ "$types" != "$last_types" ] || [ "$signature" != "$last_signature" ]; then
+        last_types="$types"
+        last_signature="$signature"
 
         x_targets="$(xclip -selection clipboard -t TARGETS -o 2>/dev/null || true)"
         has_png_x=false
@@ -127,7 +177,23 @@ while true; do
 
             # Refresh cached types after our own write so we don't immediately
             # re-enter the conversion branch on the next loop.
-            last="$(wl-paste --list-types 2>/dev/null || true)"
+            last_types="$(wl-paste --list-types 2>/dev/null || true)"
+
+            if $has_png_wl; then
+                last_signature="$(
+                    wl-paste -t image/png 2>/dev/null \
+                        | sha256sum 2>/dev/null \
+                        | awk '{print $1}'
+                )"
+            elif $has_bmp; then
+                last_signature="$(
+                    wl-paste -t image/bmp 2>/dev/null \
+                        | sha256sum 2>/dev/null \
+                        | awk '{print $1}'
+                )"
+            else
+                last_signature=""
+            fi
         fi
     fi
 
