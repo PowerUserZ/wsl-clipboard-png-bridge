@@ -43,6 +43,16 @@ project uses [Semantic Versioning](https://semver.org/).
   `uninstall.sh`, because that path is embedded in the shell's own command
   line. Tightened to `pgrep -fx "bash $INSTALL_PATH"` / `pkill -fx ...` so
   only the exact daemon cmdline matches.
+- **Critical — `uninstall.sh` could silently destroy unrelated bashrc
+  content.** If the `~/.bashrc` managed block was partially corrupted so
+  that the start sentinel was still present but the end sentinel had been
+  removed (manual edit, merge conflict resolution, another tool rewriting
+  the file, etc.), the `sed "/START/,/END/d"` range semantically meant
+  *"from start sentinel to end of file"* — deleting every line between the
+  start sentinel and EOF, including exports, aliases, secrets, and
+  `source` directives the user had written after the block. `uninstall.sh`
+  now requires BOTH sentinels to be present before running the delete and
+  emits a clear warning with manual-removal instructions otherwise.
 
 ### Changed
 - README: `Requirements` section now mentions `curl` (needed by the one-shot
