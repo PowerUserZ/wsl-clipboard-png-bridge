@@ -266,7 +266,13 @@ while true; do
                 refreshed="$(clipboard_signature "image/bmp")"
             fi
             [ -n "$refreshed" ] && last_signature="$refreshed"
-        elif ! $has_png_wl && ! $has_bmp; then
+        elif $has_png_wl || $has_bmp; then
+            # Conversion/read failed. Advance type state to avoid retrying on
+            # every poll, but clear signature so a bounded retry still occurs
+            # on the periodic signature hash tick.
+            last_types="$types"
+            last_signature=""
+        else
             last_types="$types"
             last_signature=""
         fi
