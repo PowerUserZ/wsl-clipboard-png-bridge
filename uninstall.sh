@@ -15,10 +15,19 @@ SENTINEL_END="# <<< ${SCRIPT_NAME} <<<"
 
 log() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 
-# Stop the daemon (exact full-path match to avoid killing unrelated processes).
-if pgrep -f "$INSTALL_PATH" >/dev/null 2>&1; then
+# Stop the daemon.
+#
+# The daemon's cmdline is exactly "bash <INSTALL_PATH>" because the script
+# starts with `#!/usr/bin/env bash`. We match that exact full cmdline with
+# `pgrep -fx` so that unrelated processes whose cmdline merely *contains*
+# "$INSTALL_PATH" — most notably the very shell running this script, which
+# at this moment has the path embedded in its own command line — are not
+# killed. A previous version used `pkill -f "$INSTALL_PATH"` and ended up
+# killing its own parent shell.
+daemon_cmdline="bash $INSTALL_PATH"
+if pgrep -fx "$daemon_cmdline" >/dev/null 2>&1; then
     log "stopping daemon"
-    pkill -f "$INSTALL_PATH" || true
+    pkill -fx "$daemon_cmdline" || true
     sleep 0.3
 fi
 

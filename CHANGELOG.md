@@ -37,6 +37,13 @@ project uses [Semantic Versioning](https://semver.org/).
   `0.3` instead of being accepted as valid. This prevents accidental tight
   loops / busy polling caused by zero-second sleeps.
 
+- **`uninstall.sh` killed the shell running it.** The daemon-stop step used
+  `pkill -f "$INSTALL_PATH"`, which matched every process whose cmdline
+  merely *contained* the install path — including the very shell invoking
+  `uninstall.sh`, because that path is embedded in the shell's own command
+  line. Tightened to `pgrep -fx "bash $INSTALL_PATH"` / `pkill -fx ...` so
+  only the exact daemon cmdline matches.
+
 ### Changed
 - README: `Requirements` section now mentions `curl` (needed by the one-shot
   installer; not needed when running `./install.sh` from a local checkout).
