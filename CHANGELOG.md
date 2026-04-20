@@ -33,6 +33,9 @@ project uses [Semantic Versioning](https://semver.org/).
 - **Local installer path no longer requires `curl`.** `install.sh` now checks
   for `curl` only when it needs to download from GitHub. Running `./install.sh`
   from a cloned checkout works without `curl`, matching the README guidance.
+- **`CLIPBOARD_WATCH_INTERVAL=0` now correctly falls back** to the default
+  `0.3` instead of being accepted as valid. This prevents accidental tight
+  loops / busy polling caused by zero-second sleeps.
 
 ### Changed
 - README: `Requirements` section now mentions `curl` (needed by the one-shot
@@ -43,6 +46,10 @@ project uses [Semantic Versioning](https://semver.org/).
   `CLIPBOARD_SIGNATURE_EVERY` polls (default `3`) when MIME types are
   unchanged, reducing steady-state CPU overhead while still detecting
   back-to-back screenshots.
+- Added explicit `sha256sum` dependency checks in installer/runtime checks
+  because signature-based detection now relies on it.
+- Installer WSL guard now rejects WSL1 explicitly, aligning runtime checks
+  with the documented "WSL2 required" support boundary.
 
 ## [0.1.0] — 2026-04-20
 

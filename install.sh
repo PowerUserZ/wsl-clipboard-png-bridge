@@ -26,9 +26,12 @@ die() { printf '\033[1;31m==> error:\033[0m %s\n' "$*" >&2; exit 1; }
 if ! { [ -r /proc/sys/kernel/osrelease ] && grep -qi "microsoft" /proc/sys/kernel/osrelease; }; then
     die "this installer only runs under WSL2 (detected non-WSL kernel)"
 fi
+if ! grep -qi "wsl2" /proc/sys/kernel/osrelease; then
+    die "this installer requires WSL2 (detected WSL1-compatible kernel string)"
+fi
 
 missing=()
-required_cmds=(wl-paste wl-copy xclip convert timeout flock mktemp)
+required_cmds=(wl-paste wl-copy xclip convert timeout flock mktemp sha256sum)
 if [ ! -f "$SOURCE_SCRIPT" ]; then
     required_cmds+=(curl)
 fi

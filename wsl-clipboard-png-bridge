@@ -26,7 +26,7 @@ set -euo pipefail
 # Reject anything that isn't a positive number so the value can't become a
 # shell-injection vector when expanded into `sleep`.
 interval="${CLIPBOARD_WATCH_INTERVAL:-0.3}"
-if ! [[ "$interval" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+if ! awk -v v="$interval" 'BEGIN { exit !(v ~ /^[0-9]+([.][0-9]+)?$/ && v > 0) }'; then
     echo "wsl-clipboard-png-bridge: invalid CLIPBOARD_WATCH_INTERVAL='$interval'; using 0.3" >&2
     interval="0.3"
 fi
@@ -66,7 +66,7 @@ fi
 # --- dependency check -----------------------------------------------------
 
 missing=()
-for cmd in wl-paste wl-copy xclip convert timeout mktemp flock; do
+for cmd in wl-paste wl-copy xclip convert timeout mktemp flock sha256sum; do
     command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
 done
 if (( ${#missing[@]} > 0 )); then
@@ -92,6 +92,10 @@ trap 'cleanup; exit 129' HUP
 
 # --- main loop ------------------------------------------------------------
 
+clipboard_signature() {
+    local mime="$1"
+    wl-paste -t "$mime" 2>/dev/null | sha256sum 2>/dev/null | awk '{print $1}'
+}
 last_types=""
 last_signature=""
 signature_tick=0
@@ -126,17 +130,9 @@ while true; do
     # steady-state CPU overhead.
     if $should_hash; then
         if $has_png_wl; then
-            signature="$(
-                wl-paste -t image/png 2>/dev/null \
-                    | sha256sum 2>/dev/null \
-                    | awk '{print $1}'
-            )"
+            signature="$(clipboard_signature "image/png")"
         elif $has_bmp; then
-            signature="$(
-                wl-paste -t image/bmp 2>/dev/null \
-                    | sha256sum 2>/dev/null \
-                    | awk '{print $1}'
-            )"
+            signature="$(clipboard_signature "image/bmp")"
         else
             signature=""
         fi
@@ -180,17 +176,9 @@ while true; do
             last_types="$(wl-paste --list-types 2>/dev/null || true)"
 
             if $has_png_wl; then
-                last_signature="$(
-                    wl-paste -t image/png 2>/dev/null \
-                        | sha256sum 2>/dev/null \
-                        | awk '{print $1}'
-                )"
+                last_signature="$(clipboard_signature "image/png")"
             elif $has_bmp; then
-                last_signature="$(
-                    wl-paste -t image/bmp 2>/dev/null \
-                        | sha256sum 2>/dev/null \
-                        | awk '{print $1}'
-                )"
+                last_signature="$(clipboard_signature "image/bmp")"
             else
                 last_signature=""
             fi
