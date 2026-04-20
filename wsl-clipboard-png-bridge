@@ -224,11 +224,22 @@ while true; do
             fi
 
             if $ok && [ -s "$tmp" ]; then
-                if ! $has_png_wl; then
-                    timeout "$io_timeout" wl-copy -t image/png <"$tmp" 2>/dev/null || true
+                # Count the publish step as successful only if at least one of
+                # Wayland / X11 actually accepted the PNG. If both writes fail
+                # (clipboard manager crash, transient DBus / X error, …) keep
+                # `did_work=false` so the next poll retries instead of caching
+                # a signature for an image that never reached a consumer.
+                wrote_any=false
+                if $has_png_wl; then
+                    # Wayland already has PNG; we only need to mirror to X11.
+                    wrote_any=true
+                elif timeout "$io_timeout" wl-copy -t image/png <"$tmp" 2>/dev/null; then
+                    wrote_any=true
                 fi
-                timeout "$io_timeout" xclip -selection clipboard -t image/png -i "$tmp" 2>/dev/null || true
-                did_work=true
+                if timeout "$io_timeout" xclip -selection clipboard -t image/png -i "$tmp" 2>/dev/null; then
+                    wrote_any=true
+                fi
+                $wrote_any && did_work=true
             fi
 
             rm -f "$tmp"
@@ -240,11 +251,18 @@ while true; do
         # state so the next poll retries instead of silently dropping the
         # screenshot.
         if $did_work; then
+            # Re-read types AFTER our writes — a BMP we just converted will
+            # now appear as image/png on the Wayland clipboard, so we must
+            # pick the signature MIME from the *refreshed* type list rather
+            # than the pre-conversion has_png_wl/has_bmp flags. Otherwise
+            # clipboard_signature("image/bmp") returns empty, last_signature
+            # stays on the pre-write value, and the same PNG is re-published
+            # about signature_every polls later.
             last_types="$(timeout "$io_timeout" wl-paste --list-types 2>/dev/null || true)"
             refreshed=""
-            if $has_png_wl; then
+            if grep -qx "image/png" <<<"$last_types"; then
                 refreshed="$(clipboard_signature "image/png")"
-            elif $has_bmp; then
+            elif grep -qx "image/bmp" <<<"$last_types"; then
                 refreshed="$(clipboard_signature "image/bmp")"
             fi
             [ -n "$refreshed" ] && last_signature="$refreshed"
