@@ -20,6 +20,16 @@ project uses [Semantic Versioning](https://semver.org/).
   simplified to the same fire-and-forget pattern (previously used a correctly
   scoped `( ... )` subshell so it did not contribute to the crash, but is
   cleaner without it).
+- **`CLIPBOARD_CONVERT_TIMEOUT=0` was silently accepted**, which made
+  `timeout 0 convert …` return immediately and broke every conversion. The
+  regex now requires a positive integer (`^[1-9][0-9]*$`) and logs a message
+  on the fallback to `5`.
+
+### Changed
+- README: `Requirements` section now mentions `curl` (needed by the one-shot
+  installer; not needed when running `./install.sh` from a local checkout).
+- README: minor wording / US-English consistency pass ("defense", threat-model
+  sentence).
 
 ## [0.1.0] — 2026-04-20
 
