@@ -4,6 +4,94 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project uses [Semantic Versioning](https://semver.org/).
 
+## [0.1.6] — 2026-04-26
+
+### Fixed
+- **Hidden production CPU leak — `debug()` no-op still evaluated all of
+  its argument substitutions.** Bash expands `$(...)` in function arguments
+  *before* the function runs, so even with `CLIPBOARD_DEBUG=0` (debug() is
+  a `:` no-op stub) every poll iteration was paying for a `stat` fork
+  inside `$(stat -c%s "$tmp" ...)` and several internal `$([ ... ] && echo
+  true || echo false)` expansions. Microbenchmarked: **~5.3 ms/iteration
+  → ~0.02 ms/iteration (99% reduction)**. The fix pre-computes all debug
+  arguments into local variables (`types_changed`, `sig_changed`,
+  `trigger_reason`, `_dbg_size`, `_dbg_src`) and gates `stat` behind an
+  explicit `if [ "${CLIPBOARD_DEBUG:-0}" = "1" ]; then` check.
+
+### Changed
+- **`grep -qx PATTERN <<<"$types"` → bash `case` pattern matching.** Four
+  per-poll `grep` fork+exec calls (two in the main loop, two in the
+  post-conversion refresh) replaced with bash internal `case` statements.
+  Saves ~150 µs per poll on top of the debug-args fix. Whole-line match
+  semantics preserved by wrapping the input in literal newlines:
+  `case $'\n'"$types"$'\n' in *$'\nimage/png\n'*) ... ;;`. Verified
+  against 8 edge cases including prefix-trap inputs like
+  `image/pngextra` and `X-image/png` (must not match).
+- **`types_changed` cached as a boolean variable.** The string comparison
+  `[ "$types" != "$last_types" ]` was evaluated 5 times per loop iteration
+  (twice in debug args, three times in control flow). Now computed once
+  per iteration and reused. Same treatment applied to `sig_changed` and
+  `trigger_reason`, scoped to the branches where they are actually used.
+- **`uninstall.sh` — `warn()` helper moved to the top of the script,
+  alongside `log()`**, matching `install.sh`'s style and avoiding the
+  prior dangling definition-after-use ordering.
+
+## [0.1.5] — 2026-04-26
+
+### Added
+- **Adaptive polling** — `CLIPBOARD_IDLE_INTERVAL` (default `1.5` seconds)
+  and `CLIPBOARD_ACTIVE_WINDOW_SEC` (default `5` seconds). After a successful
+  publish the daemon stays in fast-poll mode (`CLIPBOARD_WATCH_INTERVAL`,
+  default `0.3` s) for `CLIPBOARD_ACTIVE_WINDOW_SEC` seconds, then drops to
+  `CLIPBOARD_IDLE_INTERVAL`. Reduces steady-state idle CPU by ~5x without
+  changing post-screenshot latency. The existing `CLIPBOARD_WATCH_INTERVAL`
+  variable now represents the **active** interval (backwards compatible —
+  pre-0.1.5 behaviour can be restored with
+  `CLIPBOARD_IDLE_INTERVAL=0.3`).
+- **Structured debug logging** — `CLIPBOARD_DEBUG=1` enables
+  millisecond-stamped diagnostics on stderr at every decision point in the
+  poll loop (mode/interval, type detection, hash computation, convert
+  outcome, publish outcome per-channel, state cache branch). Off by default;
+  the debug helper is defined as `:` (no-op) in production so the only cost
+  is an empty function call per poll site. Activate with
+  `CLIPBOARD_DEBUG=1 ./wsl-clipboard-png-bridge 2>~/wcpb.log`.
+
+## [0.1.4] — 2026-04-26
+
+### Fixed
+- **Critical — `clipboard_signature` returned empty for any clipboard
+  larger than `CLIPBOARD_HASH_MAX_BYTES` (8 MiB default).** The inner
+  pipeline `wl-paste | head -c N | sha256sum` runs under `set -o pipefail`;
+  when `head -c N` reaches its byte cap it closes its stdin, causing
+  `wl-paste` to receive `SIGPIPE` and exit 141, which `pipefail` then
+  promoted to the pipeline's exit code, tripping the `|| exit 1` guard.
+  Result: signatures for a typical 4K BMP screenshot (~33 MiB) silently
+  came back empty, so the periodic `signature_every` re-hash that exists
+  to catch back-to-back screenshots **never produced a usable hash**.
+  `clipboard_signature()` is now a `() (...)` subshell-function with
+  `set +o pipefail` scoped to its body; large clipboards now hash and
+  dedup correctly. Verified with mock 16 MiB / 33 MiB streams.
+- **Critical — fd 9 leak via `wl-copy` and `xclip` could permanently
+  freeze the daemon's single-instance lock.** `exec 9>FILE` does not
+  set `O_CLOEXEC`, so when `wl-copy` and `xclip` self-daemonize as the
+  Wayland / X11 selection owner, they inherit fd 9 and keep the
+  `flock(2)` advisory lock held even after the bridge daemon exits. A
+  fresh daemon's `flock -n` then reports *"another instance is already
+  running"* until the user manually kills the selection daemon. Both
+  sites now close fd 9 in the child via `9>&-` redirection.
+- **Pano her signature için iki kez okunuyordu.** Old
+  `clipboard_signature` called `wl-paste` once for `head -c | sha256sum`
+  and a second time for `wc -c`, doubling clipboard IPC and racing on
+  size-vs-hash drift. New implementation streams once: `tee -p` splits
+  into a truncated copy (sha256 input) and the full stream (wc for true
+  size). For a 4K BMP this halves clipboard bandwidth (~33 MiB saved per
+  signature). `tee -p` is required — default `tee` exits on `EPIPE`
+  before forwarding the rest to `wc`, leading to a ~50% short-count.
+- **`install.sh` reported "daemon running" via the same `pgrep -f
+  $INSTALL_PATH` pattern that previously ate uninstall.sh's parent
+  shell.** Now uses `pgrep -fx "bash $INSTALL_PATH"` for an exact
+  cmdline match, consistent with `uninstall.sh`.
+
 ## [0.1.3] — 2026-04-20
 
 ### Fixed
@@ -150,3 +238,6 @@ Initial public release.
 [0.1.1]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.1
 [0.1.2]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.2
 [0.1.3]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.3
+[0.1.4]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.4
+[0.1.5]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.5
+[0.1.6]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.6

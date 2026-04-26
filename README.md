@@ -107,13 +107,35 @@ is the only practical option today.
 
 ## Configuration
 
-Environment variables, both optional:
+All environment variables are optional; invalid values fall back to defaults
+with a warning on stderr.
 
-| Variable                     | Default | Meaning                            |
-| ---------------------------- | ------- | ---------------------------------- |
-| `CLIPBOARD_WATCH_INTERVAL`   | `0.3`   | Poll interval in seconds. Must be a positive number; invalid values fall back to the default. |
-| `CLIPBOARD_CONVERT_TIMEOUT`  | `5`     | Maximum seconds each ImageMagick conversion may run before being killed. Must be a positive integer. |
-| `CLIPBOARD_SIGNATURE_EVERY`  | `3`     | When clipboard MIME types are unchanged, compute a content signature every N polls (positive integer). Lower = faster new-image detection, higher = lower CPU usage. |
+### Polling
+
+| Variable                       | Default | Meaning |
+| ------------------------------ | ------- | ------- |
+| `CLIPBOARD_WATCH_INTERVAL`     | `0.3`   | **Active** poll interval in seconds (positive number). Used right after a successful conversion and for `CLIPBOARD_ACTIVE_WINDOW_SEC` seconds afterwards. Pre-0.1.5 this was the only interval; setting `CLIPBOARD_IDLE_INTERVAL=0.3` restores the old steady-state behaviour. |
+| `CLIPBOARD_IDLE_INTERVAL`      | `1.5`   | **Idle** poll interval in seconds (positive number). Used when no successful publish has happened within `CLIPBOARD_ACTIVE_WINDOW_SEC`. Drops idle CPU ~5x at the cost of one extra poll of latency for the first screenshot after a long quiet period. |
+| `CLIPBOARD_ACTIVE_WINDOW_SEC`  | `5`     | Seconds the daemon stays in fast-poll mode after a successful publish (positive integer). Each new conversion extends the window. |
+| `CLIPBOARD_SIGNATURE_EVERY`    | `3`     | When clipboard MIME types are unchanged, compute a content signature every N polls (positive integer). Lower = faster back-to-back screenshot detection, higher = lower CPU usage. |
+
+### Resource limits
+
+| Variable                       | Default     | Meaning |
+| ------------------------------ | ----------- | ------- |
+| `CLIPBOARD_CONVERT_TIMEOUT`    | `5`         | Maximum seconds each ImageMagick conversion may run before being killed (positive integer). |
+| `CLIPBOARD_CONVERT_MEMORY_MB`  | `256`       | `convert -limit memory/map` ceiling (MiB, positive integer). |
+| `CLIPBOARD_CONVERT_DISK_MB`    | `512`       | `convert -limit disk` ceiling (MiB, positive integer). |
+| `CLIPBOARD_IO_TIMEOUT`         | `2`         | Per-call timeout (seconds) on every blocking `wl-paste`, `wl-copy`, and `xclip` invocation. Prevents a hung selection owner from wedging the loop. |
+| `CLIPBOARD_HASH_TIMEOUT`       | `2`         | Total timeout (seconds) for one signature computation. |
+| `CLIPBOARD_HASH_MAX_BYTES`     | `8388608`   | Bytes of clipboard content hashed per signature (positive integer). The full byte count is mixed into the signature alongside the prefix hash to defeat prefix-only collisions. |
+
+### Diagnostics
+
+| Variable                       | Default | Meaning |
+| ------------------------------ | ------- | ------- |
+| `CLIPBOARD_DEBUG`              | `0`     | Set to `1` to emit millisecond-stamped diagnostics on stderr at every decision point in the poll loop. Use as `CLIPBOARD_DEBUG=1 ./wsl-clipboard-png-bridge 2>~/wcpb.log` for bug reports. Off by default; the no-op debug helper costs ~5 µs per poll. |
+| `WCPB_LOCK_FILE`               | `~/.cache/wsl-clipboard-png-bridge.lock` | Override the single-instance lock file path. |
 
 ## Security notes
 

@@ -93,8 +93,13 @@ log "starting daemon (duplicate spawns exit silently via the daemon's self-lock)
 nohup "$INSTALL_PATH" >/dev/null 2>&1 &
 disown
 
+# Match the daemon's exact full cmdline ("bash <INSTALL_PATH>") with -fx, the
+# same pattern uninstall.sh uses. Plain `pgrep -f "$INSTALL_PATH"` matches any
+# process whose cmdline merely *contains* the install path — including this
+# very script, an editor with the path open, or a verifying shell — and would
+# falsely report "daemon running" when the actual daemon failed to start.
 sleep 0.5
-if pgrep -f "$INSTALL_PATH" >/dev/null 2>&1; then
+if pgrep -fx "bash $INSTALL_PATH" >/dev/null 2>&1; then
     log "daemon running"
 else
     warn "daemon did not start; inspect \`$INSTALL_PATH\` manually"

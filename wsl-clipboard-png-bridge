@@ -25,13 +25,34 @@ set -euo pipefail
 
 # --- configuration --------------------------------------------------------
 
-# Poll interval in seconds. Accepts integer or decimal (e.g. 0.3, 1, 2.5).
-# Reject anything that isn't a positive number so the value can't become a
-# shell-injection vector when expanded into `sleep`.
+# Active poll interval in seconds — used right after a successful conversion
+# and for $active_window_sec seconds afterwards, then the daemon switches to
+# $idle_interval to drop steady-state CPU. Accepts integer or decimal
+# (e.g. 0.3, 1, 2.5). Reject anything that isn't a positive number so the
+# value can't become a shell-injection vector when expanded into `sleep`.
+# Name kept for backwards compatibility — pre-0.1.5 this was the only poll
+# interval.
 interval="${CLIPBOARD_WATCH_INTERVAL:-0.3}"
 if ! awk -v v="$interval" 'BEGIN { exit !(v ~ /^[0-9]+([.][0-9]+)?$/ && v > 0) }'; then
     echo "wsl-clipboard-png-bridge: invalid CLIPBOARD_WATCH_INTERVAL='$interval'; using 0.3" >&2
     interval="0.3"
+fi
+
+# Idle poll interval (seconds). Used when no activity has occurred in the
+# last $active_window_sec seconds. Defaults to 5x the active interval so the
+# daemon is responsive after a screenshot but cheap when nothing is happening.
+idle_interval="${CLIPBOARD_IDLE_INTERVAL:-1.5}"
+if ! awk -v v="$idle_interval" 'BEGIN { exit !(v ~ /^[0-9]+([.][0-9]+)?$/ && v > 0) }'; then
+    echo "wsl-clipboard-png-bridge: invalid CLIPBOARD_IDLE_INTERVAL='$idle_interval'; using 1.5" >&2
+    idle_interval="1.5"
+fi
+
+# Seconds the daemon stays in active (fast) polling after a successful
+# publish. Each successful conversion extends this window. Positive integer.
+active_window_sec="${CLIPBOARD_ACTIVE_WINDOW_SEC:-5}"
+if ! [[ "$active_window_sec" =~ ^[1-9][0-9]*$ ]]; then
+    echo "wsl-clipboard-png-bridge: invalid CLIPBOARD_ACTIVE_WINDOW_SEC='$active_window_sec'; using 5" >&2
+    active_window_sec="5"
 fi
 
 # Maximum seconds ImageMagick is allowed to spend on one conversion. Cheap
@@ -91,11 +112,40 @@ if ! [[ "$convert_disk_mb" =~ ^[1-9][0-9]*$ ]]; then
     convert_disk_mb="512"
 fi
 
+# --- structured debug logging (off by default) ----------------------------
+
+# CLIPBOARD_DEBUG=1 turns on millisecond-stamped diagnostics on stderr at
+# every decision point in the poll loop (mode selection, signature compute,
+# convert outcome, publish outcome, state-cache update). Defined as a
+# function so production runs pay only an empty-function call cost
+# (~5 µs/poll) — no `date` fork unless debug is actually enabled.
+#
+# Activation:    CLIPBOARD_DEBUG=1 ./wsl-clipboard-png-bridge 2>~/wcpb.log
+if [ "${CLIPBOARD_DEBUG:-0}" = "1" ]; then
+    debug() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" "$*" >&2; }
+else
+    debug() { :; }
+fi
+
 # --- single-instance guard ------------------------------------------------
 
 # Hold an advisory lock on a per-user lock file for the daemon's lifetime.
 # If another instance already owns it, exit quietly so duplicate invocations
 # (from multiple login shells or a second install.sh run) are harmless.
+#
+# WARNING — fd 9 inheritance:
+#   `exec 9>FILE` does not set O_CLOEXEC, so any child process inherits fd 9
+#   and keeps holding the advisory lock until its own fd is closed. Most
+#   children we spawn are short-lived (wl-paste, convert, sha256sum) and exit
+#   well before the daemon does, so the lock is effectively released along
+#   with them. The two exceptions are `wl-copy` and `xclip`, which both
+#   self-daemonize as the Wayland / X11 selection owner and outlive the
+#   daemon. If they inherit fd 9 and the daemon dies, the lock stays held
+#   by the still-running selection daemon, and a fresh daemon's `flock -n`
+#   will report "another instance is already running" forever (until the
+#   user manually kills the selection daemon or another client takes the
+#   selection). To avoid that, every wl-copy / xclip invocation closes
+#   fd 9 with `9>&-`. Do not remove those redirections.
 LOCK_FILE="${WCPB_LOCK_FILE:-$HOME/.cache/wsl-clipboard-png-bridge.lock}"
 mkdir -p "$(dirname "$LOCK_FILE")"
 exec 9>"$LOCK_FILE"
@@ -136,39 +186,103 @@ trap 'cleanup; exit 129' HUP
 # Signature = "<sha256 of first $hash_max_bytes bytes>-<total byte count>".
 # Mixing the byte count defeats prefix-only collisions where two large images
 # share an identical leading window (e.g. two 4K screenshots with the same
-# taskbar region). Returns empty string on any read failure — callers must
+# taskbar region). Prints empty string on any read failure — callers must
 # treat empty as "unknown, do not overwrite prior signature".
-clipboard_signature() {
-    local mime="$1"
-    # Inner bash -c uses its own positional args ($1 MIME, $2 byte cap,
-    # $3 io timeout). Intentional single-quoting of the body; $1 in awk is
-    # an awk field reference. SC2016 is a false positive here.
-    # shellcheck disable=SC2016
-    timeout "$hash_timeout" bash -c '
-        set -o pipefail
-        hash="$(timeout "$3" wl-paste -t "$1" 2>/dev/null | head -c "$2" | sha256sum | awk "{print \$1}")" || exit 1
-        size="$(timeout "$3" wl-paste -t "$1" 2>/dev/null | wc -c)" || exit 1
-        [ -n "$hash" ] || exit 1
-        printf "%s-%s\n" "$hash" "$size"
-    ' _ "$mime" "$hash_max_bytes" "$io_timeout" 2>/dev/null || echo ""
-}
+#
+# Implementation notes:
+#   * `() (...)` is a subshell-function: `set +o pipefail` inside is local to
+#     this invocation and does not leak to the parent shell.
+#   * pipefail is disabled here because `head -c N` closes its stdin once it
+#     has the first N bytes, which makes tee's write to the >(...) target
+#     fail with EPIPE. With pipefail on, the whole pipeline would exit
+#     nonzero and signatures for any clipboard larger than $hash_max_bytes
+#     would always come back empty (the exact scenario we care about — a
+#     4K BMP is ~33 MiB, far larger than the 8 MiB default cap).
+#   * Single wl-paste read: tee splits the stream into a truncated copy
+#     (first $hash_max_bytes bytes → temp file → sha256) and the full stream
+#     (→ wc -c → true total size). The previous version called wl-paste
+#     twice, doubling clipboard IPC and racing on size-vs-hash drift.
+#   * `tee -p` is REQUIRED. Default tee exits immediately on a write error
+#     to any pipe; once `head -c N` closes its end of the >(...) pipe, tee
+#     would stop forwarding to wc as well, and `size` would underreport
+#     (only ~$hash_max_bytes + tee's kernel buffer). `-p` switches to
+#     `warn-nopipe` so tee logs the broken pipe to stderr but keeps
+#     streaming the rest to wc. Empirically verified with 16 MiB / 33 MiB
+#     mock streams — without -p, total size came back as ~8.4 MiB.
+#
+# The function always exits 0 (printing nothing on failure) because callers
+# use `var=$(clipboard_signature ...)` and the parent shell has `set -e`.
+# A nonzero return from the substituted command would propagate and kill
+# the daemon — empty stdout + exit 0 is the contract callers expect.
+clipboard_signature() (
+    set +o pipefail
+    local mime="$1" tmp_hash hash size
+    tmp_hash="$(mktemp 2>/dev/null)" || { echo ""; exit 0; }
+    trap 'rm -f "$tmp_hash"' EXIT
+
+    size="$(timeout "$hash_timeout" timeout "$io_timeout" wl-paste -t "$mime" 2>/dev/null \
+        | tee -p >(head -c "$hash_max_bytes" >"$tmp_hash") 2>/dev/null \
+        | wc -c)"
+
+    if [[ "$size" =~ ^[0-9]+$ ]] && [ "$size" -gt 0 ] && [ -s "$tmp_hash" ]; then
+        hash="$(sha256sum <"$tmp_hash" 2>/dev/null | cut -d' ' -f1)"
+        [ -n "$hash" ] && printf '%s-%s\n' "$hash" "$size"
+    fi
+    exit 0
+)
 
 last_types=""
 last_signature=""
 signature_tick=0
 
+# Adaptive polling state: $active_until is the epoch second at which the
+# fast (interval) → slow (idle_interval) transition happens. Each successful
+# publish bumps it to (now + active_window_sec) so a burst of screenshots
+# stays in fast-poll mode without re-entering it on every event.
+active_until=0
+
 while true; do
+    # Bash built-in printf %()T avoids forking `date` on every poll.
+    printf -v now_s '%(%s)T' -1
+    if (( now_s < active_until )); then
+        current_interval="$interval"
+        mode="active"
+    else
+        current_interval="$idle_interval"
+        mode="idle"
+    fi
+    debug "tick mode=$mode interval=$current_interval now=$now_s active_until=$active_until"
+
     types="$(timeout "$io_timeout" wl-paste --list-types 2>/dev/null || true)"
     signature="$last_signature"
 
-    has_png_wl=false
-    grep -qx "image/png" <<<"$types" && has_png_wl=true
+    # Cache the type-list comparison once instead of evaluating it 5 times
+    # below. Bash arg expansion in `debug "...$([ ... ])..."` runs even when
+    # debug() is the no-op stub, so direct boolean vars are required to
+    # keep production cost at zero.
+    if [ "$types" != "$last_types" ]; then
+        types_changed=true
+    else
+        types_changed=false
+    fi
 
+    # `case` over `grep -qx <<<"$types"`: bash internal pattern matching
+    # avoids 2 fork+exec per poll. Wrapping $types in literal newlines makes
+    # the patterns match whole lines exactly (mimics `grep -x`), so a
+    # hypothetical `image/png-foo` MIME line would not match `image/png`.
+    has_png_wl=false
     has_bmp=false
-    grep -qx "image/bmp" <<<"$types" && has_bmp=true
+    case $'\n'"$types"$'\n' in
+        *$'\nimage/png\n'*) has_png_wl=true ;;
+    esac
+    case $'\n'"$types"$'\n' in
+        *$'\nimage/bmp\n'*) has_bmp=true ;;
+    esac
+
+    debug "types has_png_wl=$has_png_wl has_bmp=$has_bmp types_changed=$types_changed"
 
     should_hash=false
-    if [ "$types" != "$last_types" ]; then
+    if $types_changed; then
         should_hash=true
         signature_tick=0
     elif $has_png_wl || $has_bmp; then
@@ -198,10 +312,14 @@ while true; do
         elif ! $has_png_wl && ! $has_bmp; then
             signature=""
         fi
+        if [ "$signature" != "$last_signature" ]; then sig_changed=true; else sig_changed=false; fi
+        debug "hash should_hash=true tick=$signature_tick new=${new_sig:0:16}.. sig_changed=$sig_changed"
     fi
 
-    if [ "$types" != "$last_types" ] || [ "$signature" != "$last_signature" ]; then
+    if $types_changed || [ "$signature" != "$last_signature" ]; then
         did_work=false
+        if $types_changed; then trigger_reason=types_changed; else trigger_reason=signature_changed; fi
+        debug "trigger reason=$trigger_reason"
 
         if $has_png_wl || $has_bmp; then
             tmp="$(mktemp --suffix=.png)"
@@ -222,6 +340,15 @@ while true; do
                     ok=false
                 fi
             fi
+            # Pre-compute debug args: $(stat ...) would fork once per poll
+            # even when DEBUG=0 (bash arg expansion happens before the
+            # no-op stub returns). Cheap shortcut: only call stat when
+            # debug is actually enabled.
+            if [ "${CLIPBOARD_DEBUG:-0}" = "1" ]; then
+                _dbg_size=$(stat -c%s "$tmp" 2>/dev/null || echo 0)
+                if $has_png_wl; then _dbg_src=png_passthrough; else _dbg_src=bmp_to_png; fi
+                debug "convert ok=$ok tmp_size=$_dbg_size source=$_dbg_src"
+            fi
 
             if $ok && [ -s "$tmp" ]; then
                 # Count the publish step as successful only if at least one of
@@ -230,16 +357,35 @@ while true; do
                 # `did_work=false` so the next poll retries instead of caching
                 # a signature for an image that never reached a consumer.
                 wrote_any=false
+                wl_copy_status="skip"   # skip|ok|fail
                 if $has_png_wl; then
                     # Wayland already has PNG; we only need to mirror to X11.
                     wrote_any=true
-                elif timeout "$io_timeout" wl-copy -t image/png <"$tmp" 2>/dev/null; then
+                elif timeout "$io_timeout" wl-copy -t image/png <"$tmp" 2>/dev/null 9>&-; then
                     wrote_any=true
+                    wl_copy_status="ok"
+                else
+                    wl_copy_status="fail"
                 fi
-                if timeout "$io_timeout" xclip -selection clipboard -t image/png -i "$tmp" 2>/dev/null; then
+                # 9>&- closes the lock fd in the wl-copy / xclip child before
+                # exec — without it, the self-daemonizing selection owner
+                # would inherit fd 9 and keep flock(2) held even after this
+                # daemon exits. See the LOCK_FILE comment block.
+                xclip_status="fail"
+                if timeout "$io_timeout" xclip -selection clipboard -t image/png -i "$tmp" 2>/dev/null 9>&-; then
                     wrote_any=true
+                    xclip_status="ok"
                 fi
-                $wrote_any && did_work=true
+                if $wrote_any; then
+                    did_work=true
+                    # Extend the fast-poll window so back-to-back screenshots
+                    # stay responsive without paying idle-poll latency for
+                    # the second one. now_s is captured at the top of the
+                    # loop iteration; using it here (vs. re-fetching) is
+                    # close enough for human-perceptible latency budgeting.
+                    active_until=$((now_s + active_window_sec))
+                fi
+                debug "publish wl_copy=$wl_copy_status xclip=$xclip_status wrote_any=$wrote_any did_work=$did_work"
             fi
 
             rm -f "$tmp"
@@ -260,23 +406,25 @@ while true; do
             # about signature_every polls later.
             last_types="$(timeout "$io_timeout" wl-paste --list-types 2>/dev/null || true)"
             refreshed=""
-            if grep -qx "image/png" <<<"$last_types"; then
-                refreshed="$(clipboard_signature "image/png")"
-            elif grep -qx "image/bmp" <<<"$last_types"; then
-                refreshed="$(clipboard_signature "image/bmp")"
-            fi
+            case $'\n'"$last_types"$'\n' in
+                *$'\nimage/png\n'*) refreshed="$(clipboard_signature "image/png")" ;;
+                *$'\nimage/bmp\n'*) refreshed="$(clipboard_signature "image/bmp")" ;;
+            esac
             [ -n "$refreshed" ] && last_signature="$refreshed"
+            debug "cache branch=advanced refreshed=${refreshed:0:16}.."
         elif $has_png_wl || $has_bmp; then
             # Conversion/read failed. Advance type state to avoid retrying on
             # every poll, but clear signature so a bounded retry still occurs
             # on the periodic signature hash tick.
             last_types="$types"
             last_signature=""
+            debug "cache branch=retry_armed (convert/publish failed; signature cleared)"
         else
             last_types="$types"
             last_signature=""
+            debug "cache branch=no_image"
         fi
     fi
 
-    sleep "$interval"
+    sleep "$current_interval"
 done

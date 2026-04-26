@@ -14,6 +14,7 @@ SENTINEL_START="# >>> ${SCRIPT_NAME} (managed block; do not edit) >>>"
 SENTINEL_END="# <<< ${SCRIPT_NAME} <<<"
 
 log() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33m==> warning:\033[0m %s\n' "$*" >&2; }
 
 # Stop the daemon.
 #
@@ -40,8 +41,6 @@ if [ -f "$LOCK_PATH" ]; then
     log "removing $LOCK_PATH"
     rm -f "$LOCK_PATH"
 fi
-
-warn() { printf '\033[1;33m==> warning:\033[0m %s\n' "$*" >&2; }
 
 # Strip the sentinel-marked block from bashrc (if present) — but ONLY when
 # both sentinels are present. If just the start sentinel remains (for
