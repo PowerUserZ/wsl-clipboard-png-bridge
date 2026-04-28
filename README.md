@@ -105,8 +105,64 @@ End-to-end test:
 
 1. Take a screenshot on Windows (`Win+Shift+S` or Snipping Tool).
 2. Switch to your WSL Claude Code session.
-3. Press `Alt+V` (or `Ctrl+V` if you have remapped; see below).
+3. Press `Alt+V` (after the one-time keybinding setup below — see
+   *"Claude Code paste keybinding"*).
 4. The image attaches as `[Image #N]`.
+
+## Claude Code paste keybinding (one-time, required on Warp for Windows)
+
+> **TL;DR** — create `~/.claude/keybindings.json` with the snippet below and
+> use `Alt+V` instead of `Ctrl+V` to paste images. This is independent of
+> the daemon — it lives entirely on the Claude Code side.
+
+This daemon's job is to put `image/png` on the WSL Wayland *and* X11
+clipboards. After it runs, your Linux clipboard is image-ready and Claude
+Code (which reads X11 first via `xclip`, falling back to `wl-paste`) can
+attach the screenshot. **However**, getting the *paste keystroke* to reach
+Claude Code's TUI is a separate problem and depends on which Windows
+terminal you use.
+
+### Why default `Ctrl+V` does not work on Warp for Windows
+
+Claude Code's default chat-image-paste keybinding on Linux/WSL is `Ctrl+V`
+(action: `chat:imagePaste`). Warp on Windows intercepts `Ctrl+V` for its
+own *text-only* paste path: it reads the Windows clipboard, and if there
+is no text format on it (an image-only clipboard right after a screenshot
+falls into this case), Warp silently does nothing. The keystroke never
+reaches Claude Code's TUI, so the image never attaches — even though our
+daemon has populated the Linux clipboards correctly.
+
+This is consistent with [`warpdotdev/Warp#7069`](https://github.com/warpdotdev/Warp/issues/7069).
+It is a Warp-side default-binding conflict, not a daemon bug. Codex CLI
+happens to default to `Alt+V`, which Warp passes through to the TUI — that
+is why image paste "just works" in Codex on the same setup.
+
+### Fix — bind `Alt+V` to image paste in Claude Code
+
+Claude Code supports user keybindings via `~/.claude/keybindings.json`.
+Add this file (it is loaded by Claude Code's keybinding watcher; new
+sessions pick it up immediately):
+
+```json
+{
+  "$schema": "https://claude.ai/schemas/keybindings.json",
+  "bindings": [
+    {
+      "context": "Chat",
+      "bindings": {
+        "alt+v": "chat:imagePaste"
+      }
+    }
+  ]
+}
+```
+
+Then take a screenshot and press `Alt+V` in Claude Code. The image
+attaches as `[Image #N]`.
+
+If you use Windows Terminal, vanilla WSL `wsl.exe` shell, or another
+terminal that does not intercept `Ctrl+V`, the default `Ctrl+V` keeps
+working and you can skip this step.
 
 ## How it works
 
@@ -190,10 +246,12 @@ with a warning on stderr.
   watching today.
 * Tested on WSL2 Ubuntu 24.04 only; other Debian-family distributions should
   work but are not CI-tested.
-* Claude Code's host terminal must deliver the paste keypress to the TUI. On
-  Warp for Windows that typically requires remapping Warp's
-  "Alternate terminal paste" off `Ctrl+V`; see
-  [`warpdotdev/Warp#7069`](https://github.com/warpdotdev/Warp/issues/7069).
+* Getting the paste *keystroke* to Claude Code's TUI is terminal-dependent.
+  On **Warp for Windows** the default `Ctrl+V` does not work and a one-time
+  Claude Code keybinding override is required (see
+  [Claude Code paste keybinding](#claude-code-paste-keybinding-one-time-required-on-warp-for-windows) above).
+  Windows Terminal and vanilla `wsl.exe` shells pass `Ctrl+V` through to
+  the TUI and need no extra setup.
 
 ## Uninstall
 

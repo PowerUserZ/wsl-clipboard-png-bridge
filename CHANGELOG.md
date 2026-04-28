@@ -6,6 +6,23 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Documentation
+- **README now documents the Claude Code paste keybinding override required
+  on Warp for Windows.** This was the missing piece that made the project
+  appear broken for users on the most common WSL2 + Warp setup: the daemon
+  was correctly populating both Wayland and X11 clipboards with `image/png`,
+  but Claude Code's default `Ctrl+V` chat-image-paste binding never reached
+  the TUI because Warp on Windows intercepts `Ctrl+V` for its own text-paste
+  path and silently does nothing when the clipboard has no text format
+  (image-only clipboards immediately after a screenshot). The fix is a
+  one-time `~/.claude/keybindings.json` snippet binding `alt+v` to
+  `chat:imagePaste`; the daemon itself needs no change. The previous
+  `Limitations` note pointed at remapping Warp's keybinding, which is
+  the wrong side — the override belongs on Claude Code, not Warp. Section
+  added: **Claude Code paste keybinding (one-time, required on Warp for
+  Windows)**, with explanation, snippet, and a note that Codex CLI works
+  out of the box because its default is already `Alt+V`.
+
 ## [0.1.7] — 2026-04-28
 
 ### Fixed
