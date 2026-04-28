@@ -148,13 +148,56 @@ cat <<'EOF'
 
 installation complete.
 
-verify:
+verify daemon:
   pgrep -af wsl-clipboard-png-bridge
 
+EOF
+
+# --- Claude Code keybinding check ----------------------------------------
+#
+# The daemon populates the Linux clipboard with image/png, but Claude Code
+# also needs a working *paste keystroke* to reach its TUI. On Warp for
+# Windows the default Ctrl+V is intercepted by Warp's text-paste path and
+# silently fails on image-only clipboards, so a one-time custom keybinding
+# is required. Print a clear, copy-pasteable warning when the user has not
+# set it up yet, and a green confirmation when they have. Re-running the
+# installer just re-checks; nothing is written to ~/.claude.
+KB_FILE="$HOME/.claude/keybindings.json"
+if [ -f "$KB_FILE" ] && grep -Eq '"alt\+v"[[:space:]]*:[[:space:]]*"chat:imagePaste"' "$KB_FILE"; then
+    printf '\033[1;32m==>\033[0m Claude Code keybinding: \033[1;32m✓\033[0m alt+v → chat:imagePaste (configured)\n'
+else
+    printf '\n\033[1;33m==> action required for image paste in Claude Code:\033[0m\n\n'
+    cat <<'EOF'
+On Warp for Windows the default Ctrl+V does NOT trigger image paste —
+Warp intercepts it for text-paste and silently fails on image-only
+clipboards. One-time fix: bind Alt+V to chat:imagePaste in Claude Code.
+
+Create ~/.claude/keybindings.json with:
+
+  {
+    "$schema": "https://claude.ai/schemas/keybindings.json",
+    "bindings": [
+      {
+        "context": "Chat",
+        "bindings": { "alt+v": "chat:imagePaste" }
+      }
+    ]
+  }
+
+Then use Alt+V (instead of Ctrl+V) to paste images.
+Windows Terminal / vanilla wsl.exe users: Ctrl+V already works — skip.
+
+Full explanation: README → "Claude Code paste keybinding".
+EOF
+fi
+
+cat <<'EOF'
+
 test end-to-end:
-  1. take a screenshot on Windows (Win+Shift+S or Snipping Tool)
-  2. in your WSL Claude Code session, press Alt+V (or Ctrl+V if remapped)
-  3. the image should attach as [Image #N]
+  1. take a screenshot on Windows (Win+Shift+S, ShareX with "Copy image
+     to clipboard" enabled, or Snipping Tool)
+  2. in your WSL Claude Code session, press Alt+V
+  3. the image attaches as [Image #N]
 
 uninstall:
   bash <(curl -fsSL https://raw.githubusercontent.com/PowerUserZ/wsl-clipboard-png-bridge/main/uninstall.sh)
