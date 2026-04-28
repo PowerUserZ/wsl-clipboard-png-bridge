@@ -6,6 +6,8 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.7] — 2026-04-28
+
 ### Fixed
 - `install.sh` now replaces an existing sentinel-managed `.bashrc` block
   instead of leaving old auto-start code in place. If only one sentinel is
@@ -268,8 +270,9 @@ Initial public release.
   `CLIPBOARD_WATCH_INTERVAL` and `CLIPBOARD_CONVERT_TIMEOUT`, startup
   dependency check.
 
-[Unreleased]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/compare/v0.1.7...HEAD
 [0.1.1]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.1
 [0.1.2]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.2
 [0.1.3]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.3
 [0.1.6]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.6
+[0.1.7]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.7
