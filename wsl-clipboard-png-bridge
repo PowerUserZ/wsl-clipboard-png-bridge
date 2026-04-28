@@ -322,12 +322,23 @@ while true; do
         debug "trigger reason=$trigger_reason"
 
         if $has_png_wl || $has_bmp; then
-            tmp="$(mktemp --suffix=.png)"
+            # `tmp=$(mktemp ...)` under set -e would kill the daemon on any
+            # mktemp failure (TMPDIR full, EMFILE, denied perms). The whole
+            # point of being a daemon is surviving transient host failures
+            # and retrying on the next poll, so guard the substitution
+            # explicitly: an empty $tmp lets the existing `[ -s "$tmp" ]`
+            # publish gate skip the iteration cleanly, and `rm -f ""` is a
+            # no-op so the trailing cleanup stays correct.
             ok=true
+            if ! tmp="$(mktemp --suffix=.png 2>/dev/null)"; then
+                tmp=""
+                ok=false
+                debug "mktemp failed (TMPDIR exhausted?); will retry next poll"
+            fi
 
-            if $has_png_wl; then
+            if $ok && $has_png_wl; then
                 timeout "$io_timeout" wl-paste -t image/png 2>/dev/null >"$tmp" || ok=false
-            else
+            elif $ok; then
                 # Bounded conversion: wall-clock timeout + memory/map/disk
                 # ceilings; ignore pipe errors but check final size.
                 if ! timeout "$io_timeout" wl-paste -t image/bmp 2>/dev/null \
@@ -351,21 +362,22 @@ while true; do
             fi
 
             if $ok && [ -s "$tmp" ]; then
-                # Count the publish step as successful only if at least one of
-                # Wayland / X11 actually accepted the PNG. If both writes fail
-                # (clipboard manager crash, transient DBus / X error, …) keep
-                # `did_work=false` so the next poll retries instead of caching
-                # a signature for an image that never reached a consumer.
-                wrote_any=false
-                wl_copy_status="skip"   # skip|ok|fail
+                # Count the publish step as successful only when both consumer
+                # paths are ready: Wayland must already hold PNG or accept our
+                # wl-copy write, and X11 must accept the xclip mirror. If one
+                # side fails transiently, keep `did_work=false` so the periodic
+                # signature retry re-attempts the missing side instead of
+                # caching an image that only reached half of the bridge.
+                wayland_ready=false
+                x11_ready=false
+                wl_copy_status="fail"   # already_png|ok|fail
                 if $has_png_wl; then
                     # Wayland already has PNG; we only need to mirror to X11.
-                    wrote_any=true
+                    wayland_ready=true
+                    wl_copy_status="already_png"
                 elif timeout "$io_timeout" wl-copy -t image/png <"$tmp" 2>/dev/null 9>&-; then
-                    wrote_any=true
+                    wayland_ready=true
                     wl_copy_status="ok"
-                else
-                    wl_copy_status="fail"
                 fi
                 # 9>&- closes the lock fd in the wl-copy / xclip child before
                 # exec — without it, the self-daemonizing selection owner
@@ -373,10 +385,10 @@ while true; do
                 # daemon exits. See the LOCK_FILE comment block.
                 xclip_status="fail"
                 if timeout "$io_timeout" xclip -selection clipboard -t image/png -i "$tmp" 2>/dev/null 9>&-; then
-                    wrote_any=true
+                    x11_ready=true
                     xclip_status="ok"
                 fi
-                if $wrote_any; then
+                if $wayland_ready && $x11_ready; then
                     did_work=true
                     # Extend the fast-poll window so back-to-back screenshots
                     # stay responsive without paying idle-poll latency for
@@ -384,8 +396,12 @@ while true; do
                     # loop iteration; using it here (vs. re-fetching) is
                     # close enough for human-perceptible latency budgeting.
                     active_until=$((now_s + active_window_sec))
+                    # This iteration may have started in idle mode. Switch the
+                    # sleep at the bottom of the same iteration to the active
+                    # interval immediately after a successful publish.
+                    current_interval="$interval"
                 fi
-                debug "publish wl_copy=$wl_copy_status xclip=$xclip_status wrote_any=$wrote_any did_work=$did_work"
+                debug "publish wl_copy=$wl_copy_status xclip=$xclip_status wayland_ready=$wayland_ready x11_ready=$x11_ready did_work=$did_work"
             fi
 
             rm -f "$tmp"

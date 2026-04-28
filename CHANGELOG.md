@@ -4,6 +4,40 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- `install.sh` now replaces an existing sentinel-managed `.bashrc` block
+  instead of leaving old auto-start code in place. If only one sentinel is
+  present, sentinel counts are mismatched, or multiple managed blocks exist,
+  the installer refuses to rewrite the file automatically to avoid corrupting
+  user shell configuration.
+- Successful publishes switch the current loop's final sleep to the active
+  polling interval immediately, so the first screenshot after idle mode does
+  not leave the next screenshot waiting for one idle sleep.
+- Partial publish failures no longer advance the image signature cache. Wayland
+  must be ready and the X11 mirror must accept the PNG before the daemon treats
+  an image as fully handled.
+- **`mktemp` failure at the conversion site no longer kills the daemon.**
+  `tmp=$(mktemp --suffix=.png)` was unguarded; under `set -e`, any transient
+  host failure (TMPDIR full, EMFILE, denied perms) propagated as a daemon
+  exit, leaving the user without a clipboard bridge until the next login
+  shell respawned it. The substitution is now wrapped so `tmp=""` and the
+  existing `[ -s "$tmp" ]` publish gate skip the iteration cleanly, with
+  `did_work=false` arming the periodic-hash retry.
+- Stale documentation was aligned with the current implementation: old
+  implementation-size wording was removed, the internal guidance no longer
+  claims there is no test runner, and the release guidance no longer claims
+  every historical changelog entry has a pushed tag.
+
+### Added
+- `tests/run.sh`, a dependency-free Bash regression harness with fake clipboard
+  commands covering installer block replacement, broken sentinel refusal,
+  active polling, X11 mirror retries, env fallback, lock contention, mktemp
+  failure survival, MIME prefix non-match, and post-publish refresh
+  (republish-prevention).
+- CI now runs the regression suite after ShellCheck.
+
 ## [0.1.6] — 2026-04-26
 
 ### Fixed
@@ -36,7 +70,7 @@ project uses [Semantic Versioning](https://semver.org/).
   alongside `log()`**, matching `install.sh`'s style and avoiding the
   prior dangling definition-after-use ordering.
 
-## [0.1.5] — 2026-04-26
+## 0.1.5 — 2026-04-26
 
 ### Added
 - **Adaptive polling** — `CLIPBOARD_IDLE_INTERVAL` (default `1.5` seconds)
@@ -56,7 +90,7 @@ project uses [Semantic Versioning](https://semver.org/).
   is an empty function call per poll site. Activate with
   `CLIPBOARD_DEBUG=1 ./wsl-clipboard-png-bridge 2>~/wcpb.log`.
 
-## [0.1.4] — 2026-04-26
+## 0.1.4 — 2026-04-26
 
 ### Fixed
 - **Critical — `clipboard_signature` returned empty for any clipboard
@@ -217,7 +251,7 @@ project uses [Semantic Versioning](https://semver.org/).
 - Installer WSL guard now rejects WSL1 explicitly, aligning runtime checks
   with the documented "WSL2 required" support boundary.
 
-## [0.1.0] — 2026-04-20
+## 0.1.0 — 2026-04-20
 
 Initial public release.
 
@@ -234,10 +268,8 @@ Initial public release.
   `CLIPBOARD_WATCH_INTERVAL` and `CLIPBOARD_CONVERT_TIMEOUT`, startup
   dependency check.
 
-[0.1.0]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.0
+[Unreleased]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/compare/v0.1.6...HEAD
 [0.1.1]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.1
 [0.1.2]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.2
 [0.1.3]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.3
-[0.1.4]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.4
-[0.1.5]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.5
 [0.1.6]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.6

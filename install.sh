@@ -16,10 +16,21 @@ SENTINEL_END="# <<< ${SCRIPT_NAME} <<<"
 
 RAW_BASE="${WCPB_RAW_BASE:-https://raw.githubusercontent.com/PowerUserZ/wsl-clipboard-png-bridge/main}"
 SOURCE_SCRIPT="$(dirname "$(readlink -f "$0")")/$SCRIPT_NAME"
+tmp=""
+tmp_bashrc=""
 
 log() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m==> warning:\033[0m %s\n' "$*" >&2; }
 die() { printf '\033[1;31m==> error:\033[0m %s\n' "$*" >&2; exit 1; }
+cleanup() {
+    if [ -n "$tmp" ]; then
+        rm -f "$tmp"
+    fi
+    if [ -n "$tmp_bashrc" ]; then
+        rm -f "$tmp_bashrc"
+    fi
+}
+trap cleanup EXIT
 
 # --- environment checks ---------------------------------------------------
 
@@ -55,20 +66,15 @@ if [ -f "$SOURCE_SCRIPT" ]; then
 else
     log "downloading $SCRIPT_NAME from $RAW_BASE"
     tmp="$(mktemp)"
-    trap 'rm -f "$tmp"' EXIT
     curl -fsSL "$RAW_BASE/$SCRIPT_NAME" -o "$tmp"
     install -m 0755 "$tmp" "$INSTALL_PATH"
 fi
 
 # --- idempotent bashrc block ---------------------------------------------
 
-if grep -Fq "$SENTINEL_START" "$BASHRC" 2>/dev/null; then
-    log "bashrc already contains the managed block; leaving it in place"
-else
-    log "appending managed block to $BASHRC"
-    {
-        printf '\n%s\n' "$SENTINEL_START"
-        cat <<EOF
+emit_bashrc_block() {
+    printf '\n%s\n' "$SENTINEL_START"
+    cat <<EOF
 # Installed by wsl-clipboard-png-bridge/install.sh. Remove the entire block
 # between the sentinel comments (or run uninstall.sh) to opt out.
 # Fire-and-forget spawn. The daemon itself holds an exclusive flock on
@@ -83,8 +89,41 @@ if command -v wl-paste >/dev/null 2>&1 && [ -x "\$HOME/.local/bin/$SCRIPT_NAME" 
     disown
 fi
 EOF
-        printf '%s\n' "$SENTINEL_END"
-    } >>"$BASHRC"
+    printf '%s\n' "$SENTINEL_END"
+}
+
+escape_sed_literal() {
+    printf '%s' "$1" | sed 's/[][\/.^$*]/\\&/g'
+}
+
+bashrc_start_count=0
+bashrc_end_count=0
+if [ -f "$BASHRC" ]; then
+    bashrc_start_count="$(grep -Fc "$SENTINEL_START" "$BASHRC" || true)"
+    bashrc_end_count="$(grep -Fc "$SENTINEL_END" "$BASHRC" || true)"
+fi
+
+if [ "$bashrc_start_count" -eq 1 ] && [ "$bashrc_end_count" -eq 0 ]; then
+    die "$BASHRC has a start sentinel but no matching end sentinel; refusing to rewrite it automatically"
+elif [ "$bashrc_start_count" -eq 0 ] && [ "$bashrc_end_count" -eq 1 ]; then
+    die "$BASHRC has an end sentinel but no matching start sentinel; refusing to rewrite it automatically"
+elif [ "$bashrc_start_count" -ne "$bashrc_end_count" ]; then
+    die "$BASHRC has mismatched managed block sentinels; refusing to rewrite it automatically"
+elif [ "$bashrc_start_count" -gt 1 ]; then
+    die "$BASHRC has multiple managed blocks; refusing to rewrite it automatically"
+elif [ "$bashrc_start_count" -eq 1 ]; then
+    log "replacing managed block in $BASHRC"
+    tmp_bashrc="$(mktemp)"
+    start_re="$(escape_sed_literal "$SENTINEL_START")"
+    end_re="$(escape_sed_literal "$SENTINEL_END")"
+    sed "/$start_re/,/$end_re/d" "$BASHRC" >"$tmp_bashrc"
+    emit_bashrc_block >>"$tmp_bashrc"
+    install -m 0644 "$tmp_bashrc" "$BASHRC"
+    rm -f "$tmp_bashrc"
+    tmp_bashrc=""
+else
+    log "appending managed block to $BASHRC"
+    emit_bashrc_block >>"$BASHRC"
 fi
 
 # --- start the daemon now ------------------------------------------------

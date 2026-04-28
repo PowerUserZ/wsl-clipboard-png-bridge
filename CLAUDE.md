@@ -13,8 +13,9 @@ The point is to make WSL-side tools that only accept `image/png` (notably
 Claude Code — see `anthropics/claude-code#25935`) able to receive Windows
 screenshots without manual file-saving.
 
-There is **no build step, no package manager, no test framework**. The whole
-project is three Bash scripts.
+There is **no build step and no package manager**. Runtime code is Bash, and
+the regression suite is a dependency-free Bash harness with fake clipboard
+commands.
 
 ## Layout
 
@@ -25,7 +26,10 @@ project is three Bash scripts.
   sentinel-marked block to `~/.bashrc` for auto-start, and spawns the daemon.
   Idempotent.
 - `uninstall.sh` — reverse of `install.sh`.
-- `.github/workflows/shellcheck.yml` — the only CI gate.
+- `tests/run.sh` — regression tests for installer block replacement, daemon
+  retry/cache behavior, env fallback, and single-instance locking.
+- `.github/workflows/shellcheck.yml` — ShellCheck plus the Bash regression
+  suite.
 - `.github/workflows/claude-review.yml` — calls a reusable workflow from
   `PowerUserZ/.github`, pinned by commit SHA (do not switch back to a tag).
 - `TASKS.md` — Turkish-language list of suggested code-review improvements;
@@ -37,6 +41,9 @@ project is three Bash scripts.
 # Lint (matches CI exactly — both .sh files and the extensionless daemon)
 shellcheck -x install.sh uninstall.sh wsl-clipboard-png-bridge
 
+# Regression tests (no WSLg required; fake clipboard commands are generated)
+tests/run.sh
+
 # Run the daemon in the foreground for manual testing
 ./wsl-clipboard-png-bridge
 
@@ -46,9 +53,10 @@ shellcheck -x install.sh uninstall.sh wsl-clipboard-png-bridge
 #   3. Run: xclip -selection clipboard -t TARGETS -o   # should include image/png
 ```
 
-There is no `--help`, no test runner, and no single-test invocation — bug
-reproductions are done by running the daemon in the foreground and triggering
-the failing clipboard transition by hand.
+There is no `--help` and no single-test invocation. Clipboard edge cases should
+get a fake-command regression in `tests/run.sh`; host-specific WSLg issues are
+still reproduced by running the daemon in the foreground and triggering the
+failing clipboard transition by hand.
 
 ## Architecture (the only thing worth reading more than once)
 
@@ -76,9 +84,11 @@ with a small state machine. Every iteration:
    a PNG or BMP. Convert via `convert` with wall-clock `timeout` AND
    `-limit memory/map/disk`. Publish to Wayland (`wl-copy`) and X11 (`xclip`),
    each with `9>&-` to drop the daemon's lock fd in the daemonizing child.
-5. **Advance the state cache** (`last_types`, `last_signature`) **only on
-   success**. A failed conversion or failed publish keeps the old state so
-   the next poll retries.
+5. **Advance the state cache** (`last_types`, `last_signature`) **only after
+   both publish paths are ready**. Wayland must either already hold PNG or
+   accept the `wl-copy` write, and X11 must accept the `xclip` mirror. A failed
+   conversion or partial publish keeps the old signature state so the periodic
+   hash retry re-attempts the missing side.
 
 Every decision point above is instrumented with `debug "..."` calls that
 are no-ops unless `CLIPBOARD_DEBUG=1` is set. Use that for any bug
@@ -86,10 +96,10 @@ reproduction: `CLIPBOARD_DEBUG=1 ./wsl-clipboard-png-bridge 2>~/wcpb.log`.
 
 ### Invariants the code depends on
 
-- **`did_work` is true only when at least one publish succeeded** (or
-  Wayland already held PNG and we just mirrored to X11). Setting it true on
-  PNG temp-file existence is the bug fixed in 0.1.3 — it cached signatures
-  for screenshots that never reached a consumer.
+- **`did_work` is true only when Wayland and X11 are both ready.** Wayland may
+  already hold PNG, but X11 still has to accept the mirror. Setting success on
+  PNG temp-file existence, or on only one publish target, caches signatures for
+  screenshots that did not reach the full bridge.
 - **Post-conversion signature refresh must re-read the MIME list.** After
   BMP → PNG, the clipboard advertises `image/png`, not `image/bmp`. Hashing
   with the stale `has_bmp` flag returns empty (the BMP slot is gone),
@@ -119,7 +129,7 @@ reproduction: `CLIPBOARD_DEBUG=1 ./wsl-clipboard-png-bridge 2>~/wcpb.log`.
 | `CLIPBOARD_HASH_TIMEOUT` | `2` | Cap on the whole signature read+hash subshell. |
 | `CLIPBOARD_HASH_MAX_BYTES` | `8388608` | Bytes hashed per signature (capped to bound stalls on huge clipboards). |
 | `CLIPBOARD_IO_TIMEOUT` | `2` | Cap on any single `wl-paste`/`wl-copy`/`xclip` call. |
-| `CLIPBOARD_CONVERT_MEMORY_MB` / `_MAP_MB` / `_DISK_MB` | tuned for 4K BMP | ImageMagick `-limit` ceilings. |
+| `CLIPBOARD_CONVERT_MEMORY_MB` / `CLIPBOARD_CONVERT_DISK_MB` | tuned for 4K BMP | ImageMagick `-limit` ceilings. The memory value is also used for `-limit map`. |
 | `CLIPBOARD_DEBUG` | `0` | Set to `1` for ms-stamped diagnostics on stderr (since 0.1.5). |
 | `WCPB_LOCK_FILE` | `~/.cache/wsl-clipboard-png-bridge.lock` | Single-instance flock path. |
 
@@ -200,7 +210,19 @@ them; the comments at each site explain why.
   If you reach for `grep` here, use `case` instead. The literal
   newline wrappers are mandatory: without them, a hypothetical
   `image/pngextra` MIME line would falsely match `image/png`. Commit
-  for v0.1.6.
+  for v0.1.6. Regression covered by
+  `tests/run.sh::test_mime_prefix_does_not_false_match`.
+- **`tmp=$(mktemp --suffix=.png)` is guarded with `if ! ...; then tmp=""`,
+  not bare.** The daemon runs under `set -euo pipefail`; any standalone
+  command-substitution assignment that exits nonzero terminates the
+  daemon. `mktemp` can fail transiently on a host (TMPDIR full, EMFILE,
+  denied perms), and "kill the long-running daemon and wait for the user's
+  next login shell to respawn it" is the wrong failure mode. The
+  conversion site now skips the iteration on mktemp failure (gated by
+  `if $ok` around the wl-paste/convert pipeline) and the existing
+  `did_work=false → retry_armed` path arms the next periodic-hash retry.
+  Regression covered by
+  `tests/run.sh::test_mktemp_failure_does_not_crash`.
 
 ## Trust model (don't bolt on extra validation)
 
@@ -211,7 +233,8 @@ authenticates content. Do not add antivirus-style checks.
 
 ## Versioning
 
-`CHANGELOG.md` follows Keep-a-Changelog. Each release entry is anchored to a
-git tag (`v0.1.0` … `v0.1.6`). Keep changelog entries factual about *the
-state-machine bug fixed*, not the symptom — that's how the existing entries
-are written and why they remain useful as a reading list of invariants.
+`CHANGELOG.md` follows Keep-a-Changelog. Keep entries factual about *the
+state-machine bug fixed*, not just the symptom — that's how the existing
+entries are written and why they remain useful as a reading list of invariants.
+Before publishing a release, verify that any changelog reference links point to
+tags or commits that actually exist.

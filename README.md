@@ -32,8 +32,8 @@ Pick whichever matches your workflow — they are not typically used together.
 | Paste in Explorer           | —                                        | Works (file drop list) |
 | Excel / spreadsheet filter  | No                                       | Yes |
 | De-duplication              | No                                       | Yes (SHA-256) |
-| Implementation              | ~70 lines of bash                        | Go binary + persistent PowerShell STA subprocess |
-| Dependencies                | `wl-clipboard`, `xclip`, `imagemagick`   | Single Go binary |
+| Implementation              | Single Bash daemon + installer scripts   | Go binary + persistent PowerShell STA subprocess |
+| Dependencies                | `wl-clipboard`, `xclip`, `imagemagick`, `coreutils`, `util-linux` | Single Go binary |
 
 In short: this tool stays out of the Windows clipboard entirely and gives you
 a clean inline-paste experience in Claude Code. If you want cross-app paste
@@ -146,10 +146,11 @@ with a warning on stderr.
   and a `trap` removes the file on normal exit, `INT`, `TERM`, or `HUP`.
 * **ImageMagick attack surface.** BMP parsing has had notable CVEs historically
   (e.g. ImageTragick — CVE-2016-3714). This bridge converts BMP bytes with a
-  `timeout 5` wrapper to bound memory / CPU on malformed input, and relies on
-  Ubuntu's default `policy.xml` limits. If your threat model does not include
-  "a local user pastes a hostile BMP to their own clipboard", you can skip
-  this tool. The code is ~70 lines of bash — audit it before installing.
+  wall-clock timeout plus ImageMagick memory/map/disk limits to bound resource
+  use on malformed input, and relies on Ubuntu's default `policy.xml` limits.
+  If your threat model does not include "a local user pastes a hostile BMP to
+  their own clipboard", you can skip this tool. The daemon is a single Bash
+  script with focused shell tests — audit it before installing.
 * **No privilege escalation.** Install writes only under `$HOME`, and the
   installer never invokes `sudo` silently.
 

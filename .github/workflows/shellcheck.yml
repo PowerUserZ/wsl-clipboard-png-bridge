@@ -18,3 +18,5 @@ jobs:
         with:
           scandir: '.'
           additional_files: 'wsl-clipboard-png-bridge'
+      - name: Run tests
+        run: tests/run.sh
