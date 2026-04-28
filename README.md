@@ -44,28 +44,56 @@ a clean inline-paste experience in Claude Code. If you want cross-app paste
 
 * WSL2 with WSLg (ships in Windows 11 and current Windows 10 builds)
 * Ubuntu / Debian-family distribution
-* Packages: `wl-clipboard xclip imagemagick coreutils util-linux curl`
-
-`curl` is only required for the one-shot installer; if you clone the repo and
-run `./install.sh` from inside it, you do not need `curl` because the installer
-copies the script from the local checkout.
 
 ## Install
 
+### 1. System packages (required, one-time)
+
+The daemon shells out to `wl-paste`, `wl-copy`, `xclip`, and ImageMagick's
+`convert`. None of these are typically pre-installed on a fresh WSL2 Ubuntu —
+install them up front:
+
+```bash
+sudo apt update && sudo apt install -y wl-clipboard xclip imagemagick coreutils util-linux curl
+```
+
+What each package supplies:
+
+| Package        | Provides                              | Why it is needed |
+| -------------- | ------------------------------------- | ---------------- |
+| `wl-clipboard` | `wl-paste`, `wl-copy`                 | Read / write the WSLg Wayland clipboard |
+| `xclip`        | `xclip`                               | Mirror the converted PNG onto the X11 clipboard |
+| `imagemagick`  | `convert`                             | BMP → PNG conversion |
+| `coreutils`    | `mktemp`, `sha256sum`, `wc`           | Temp files, content hashing for change detection |
+| `util-linux`   | `flock`, `timeout`                    | Single-instance lock; per-call IPC timeouts |
+| `curl`         | `curl`                                | Used **only** by the one-shot installer below — skip if you cloned the repo |
+
+The installer fails fast with the same `sudo apt` line above if any binary is
+missing; it never invokes `sudo` itself.
+
+### 2. Run the installer
+
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/PowerUserZ/wsl-clipboard-png-bridge/main/install.sh)
+```
+
+Or, from a local clone (no `curl` needed):
+
+```bash
+git clone https://github.com/PowerUserZ/wsl-clipboard-png-bridge.git
+cd wsl-clipboard-png-bridge
+bash install.sh
 ```
 
 The installer:
 
 1. Verifies you are on WSL2 and that required commands are present.
 2. Copies the script to `~/.local/bin/wsl-clipboard-png-bridge`.
-3. Appends a sentinel-marked block to `~/.bashrc` that starts exactly one
-   daemon per user (via `flock`).
+3. Adds (or replaces) a sentinel-marked block in `~/.bashrc` that
+   fire-and-forget-spawns the daemon on shell startup. Single-instance
+   behaviour comes from the daemon's own `flock`, so duplicate spawns exit
+   silently.
 4. Starts the daemon immediately.
-
-If any apt packages are missing, the installer prints a single `sudo apt`
-command and exits — it never runs `sudo` silently.
 
 ## Verify
 
