@@ -1,0 +1,6 @@
+* text=auto eol=lf
+
+*.md text eol=lf
+*.sh text eol=lf
+.gitattributes text eol=lf
+wsl-clipboard-png-bridge text eol=lf

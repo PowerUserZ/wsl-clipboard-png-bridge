@@ -242,7 +242,8 @@ screenshots whose first bytes are identical but whose later pixels changed.
   only and opens no network sockets.
 * **Temp files.** Each conversion uses `mktemp` (0600 permissions) in `$TMPDIR`,
   and a `trap` removes the file on normal exit, `INT`, or `TERM`. `SIGHUP` is
-  ignored so the daemon survives the shell that spawned it via `nohup`.
+  ignored so the daemon survives the shell that spawned it via `setsid -f` or
+  the `nohup` fallback.
 * **ImageMagick attack surface.** BMP parsing has had notable CVEs historically
   (e.g. ImageTragick — CVE-2016-3714). This bridge converts BMP bytes with a
   wall-clock timeout plus ImageMagick memory/map/disk limits to bound resource

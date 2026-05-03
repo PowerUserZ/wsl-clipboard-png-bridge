@@ -87,10 +87,11 @@ with a small state machine. Every iteration:
    Wayland-native consumers. Both calls use `9>&-` to drop the daemon's lock fd
    in the daemonizing child.
 5. **Advance the state cache** (`last_types`, `last_signature`) **only after
-   both publish paths report ready**. X11 mirroring is attempted first, but
-   Wayland is published last because WSLg can let an `xclip` write disturb the
-   Wayland selection owner. A failed conversion or partial publish keeps the old
-   signature state so the periodic hash retry re-attempts the missing side.
+   the primary Wayland publish reports ready**. X11 mirroring is attempted
+   first and is best-effort; a failed `xclip` write must not churn the same
+   Wayland-ready PNG every signature tick. A failed conversion or failed
+   Wayland publish keeps the old signature state so the periodic hash retry
+   re-attempts the missing primary publish.
 
 Every decision point above is instrumented with `debug "..."` calls that
 are no-ops unless `CLIPBOARD_DEBUG=1` is set. Use that for any bug
@@ -102,6 +103,10 @@ reproduction: `CLIPBOARD_DEBUG=1 ./wsl-clipboard-png-bridge 2>~/wcpb.log`.
   can clear the Wayland clipboard owner. The daemon may attempt X11 mirroring,
   but the final operation must be `wl-copy` so the primary `image/png` target
   remains available.
+- **Wayland success is the publish success criterion.** X11 mirroring is a
+  compatibility bonus; if `wl-copy` succeeds and `xclip` fails, advance the cache
+  instead of repeatedly converting and publishing the same content. If `wl-copy`
+  fails, keep the old state so the next signature retry tries again.
 - **Post-conversion signature refresh must re-read the MIME list.** After
   BMP → PNG, the clipboard advertises `image/png`, not `image/bmp`. Hashing
   with the stale `has_bmp` flag returns empty (the BMP slot is gone),

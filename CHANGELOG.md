@@ -6,6 +6,31 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.9] — 2026-05-03
+
+### Fixed
+- Successful Wayland publishes now advance the daemon state cache even when the
+  best-effort X11 `xclip` mirror fails. This prevents repeated conversion and
+  clipboard IPC churn every signature tick on WSLg setups where X11 mirroring is
+  unavailable or unreliable, while still retrying when the primary Wayland
+  `wl-copy` publish fails.
+- The daemon, installer, and uninstaller now fail with an explicit `HOME must be
+  set` message instead of relying on Bash's generic `set -u` unbound-variable
+  error.
+- Startup/SIGHUP comments and security notes now describe the current
+  `setsid -f` startup path with `nohup` as a fallback.
+
+### Added
+- `.gitattributes` now pins repository text files to LF line endings to reduce
+  accidental CRLF breakage from Windows-side editors.
+- Regression coverage for X11 mirror failure after Wayland success, for retrying
+  when Wayland publishing fails, and for clear HOME-unset failures.
+
+### Documentation
+- Historical changelog headings for 0.1.0, 0.1.4, and 0.1.5 now use the same
+  bracketed Keep-a-Changelog format as the other entries, with commit-backed
+  references for the historical entries that do not have GitHub release tags.
+
 ## [0.1.8] — 2026-05-03
 
 ### Fixed
@@ -147,7 +172,7 @@ project uses [Semantic Versioning](https://semver.org/).
   alongside `log()`**, matching `install.sh`'s style and avoiding the
   prior dangling definition-after-use ordering.
 
-## 0.1.5 — 2026-04-26
+## [0.1.5] — 2026-04-26
 
 ### Added
 - **Adaptive polling** — `CLIPBOARD_IDLE_INTERVAL` (default `1.5` seconds)
@@ -167,7 +192,7 @@ project uses [Semantic Versioning](https://semver.org/).
   is an empty function call per poll site. Activate with
   `CLIPBOARD_DEBUG=1 ./wsl-clipboard-png-bridge 2>~/wcpb.log`.
 
-## 0.1.4 — 2026-04-26
+## [0.1.4] — 2026-04-26
 
 ### Fixed
 - **Critical — `clipboard_signature` returned empty for any clipboard
@@ -328,7 +353,7 @@ project uses [Semantic Versioning](https://semver.org/).
 - Installer WSL guard now rejects WSL1 explicitly, aligning runtime checks
   with the documented "WSL2 required" support boundary.
 
-## 0.1.0 — 2026-04-20
+## [0.1.0] — 2026-04-20
 
 Initial public release.
 
@@ -345,10 +370,14 @@ Initial public release.
   `CLIPBOARD_WATCH_INTERVAL` and `CLIPBOARD_CONVERT_TIMEOUT`, startup
   dependency check.
 
-[Unreleased]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/compare/v0.1.8...HEAD
+[Unreleased]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/compare/v0.1.9...HEAD
+[0.1.9]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.9
 [0.1.8]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.8
-[0.1.1]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.1
-[0.1.2]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.2
-[0.1.3]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.3
-[0.1.6]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.6
 [0.1.7]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.7
+[0.1.6]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.6
+[0.1.5]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/commit/acff62d899009569d7a9ebc8ebbebe05f398cfcd
+[0.1.4]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/commit/acff62d899009569d7a9ebc8ebbebe05f398cfcd
+[0.1.3]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.3
+[0.1.2]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.2
+[0.1.1]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.1
+[0.1.0]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/commit/cf7071e9905d8529af3f7762380f75f1092c4d92

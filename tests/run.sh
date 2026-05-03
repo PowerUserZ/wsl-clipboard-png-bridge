@@ -369,7 +369,7 @@ test_success_switches_sleep_to_active_interval() {
     assert_eq "1" "$(cat "$state/xclip_count")" "xclip call count" || return 1
 }
 
-test_xclip_failure_retries_png_mirror() {
+test_xclip_failure_does_not_republish_when_wayland_succeeds() {
     local tmp fakebin home state status
     tmp="$(new_tmp)"
     fakebin="$tmp/bin"
@@ -384,7 +384,36 @@ test_xclip_failure_retries_png_mirror() {
     PATH="$fakebin:$PATH" \
         HOME="$home" \
         FAKE_STATE="$state" \
-        FAKE_XCLIP_FAIL_FIRST=1 \
+        FAKE_XCLIP_ALWAYS_FAIL=1 \
+        FAKE_SLEEP_LIMIT=3 \
+        WCPB_LOCK_FILE="$state/lock" \
+        CLIPBOARD_WATCH_INTERVAL=0.01 \
+        CLIPBOARD_IDLE_INTERVAL=0.01 \
+        CLIPBOARD_SIGNATURE_EVERY=1 \
+        bash "$ROOT/$SCRIPT_NAME" >"$tmp/out" 2>"$tmp/err" || status=$?
+
+    assert_eq "77" "$status" "daemon controlled sleep exit" || return 1
+    assert_eq "1" "$(cat "$state/wl_copy_count")" "wl-copy called once after Wayland success" || return 1
+    assert_eq "1" "$(cat "$state/xclip_count")" "xclip not retried after Wayland success" || return 1
+}
+
+test_publish_failures_retry_when_wayland_fails() {
+    local tmp fakebin home state status
+    tmp="$(new_tmp)"
+    fakebin="$tmp/bin"
+    home="$tmp/home"
+    state="$tmp/state"
+    mkdir -p "$home" "$state"
+    make_daemon_fakebin "$fakebin"
+    printf 'image/png\n' >"$state/types"
+    printf 'png-bytes' >"$state/png"
+
+    status=0
+    PATH="$fakebin:$PATH" \
+        HOME="$home" \
+        FAKE_STATE="$state" \
+        FAKE_XCLIP_ALWAYS_FAIL=1 \
+        FAKE_WL_COPY_ALWAYS_FAIL=1 \
         FAKE_SLEEP_LIMIT=2 \
         WCPB_LOCK_FILE="$state/lock" \
         CLIPBOARD_WATCH_INTERVAL=0.01 \
@@ -393,7 +422,8 @@ test_xclip_failure_retries_png_mirror() {
         bash "$ROOT/$SCRIPT_NAME" >"$tmp/out" 2>"$tmp/err" || status=$?
 
     assert_eq "77" "$status" "daemon controlled sleep exit" || return 1
-    assert_eq "2" "$(cat "$state/xclip_count")" "xclip retry count" || return 1
+    assert_eq "2" "$(cat "$state/wl_copy_count")" "wl-copy retried after Wayland failure" || return 1
+    assert_eq "2" "$(cat "$state/xclip_count")" "xclip retried while primary publish failed" || return 1
 }
 
 test_wayland_publish_runs_after_xclip_mirror() {
@@ -451,6 +481,23 @@ test_invalid_env_values_fall_back() {
     assert_eq "77" "$status" "daemon controlled sleep exit" || return 1
     assert_contains "$tmp/err" "invalid CLIPBOARD_WATCH_INTERVAL='0'; using 0.3" || return 1
     assert_contains "$tmp/err" "invalid CLIPBOARD_CONVERT_TIMEOUT='0'; using 5" || return 1
+}
+
+test_home_unset_fails_clearly() {
+    local tmp script out err status
+    tmp="$(new_tmp)"
+
+    for script in "$SCRIPT_NAME" install.sh uninstall.sh; do
+        out="$tmp/${script}.out"
+        err="$tmp/${script}.err"
+        status=0
+        env -u HOME bash "$ROOT/$script" >"$out" 2>"$err" || status=$?
+        if [ "$status" -eq 0 ]; then
+            printf 'expected %s to fail when HOME is unset\n' "$script" >&2
+            return 1
+        fi
+        assert_contains "$err" "HOME must be set" || return 1
+    done
 }
 
 # This intentionally runs the daemon against the same file locked by fd 9 in
@@ -908,9 +955,11 @@ run_test "installer refuses partial managed block" test_installer_refuses_partia
 run_test "installer refuses mismatched managed blocks" test_installer_refuses_mismatched_blocks
 run_test "installer ignores embedded sentinel text" test_installer_ignores_embedded_sentinel_text
 run_test "successful publish switches sleep to active interval" test_success_switches_sleep_to_active_interval
-run_test "xclip failure retries PNG mirror" test_xclip_failure_retries_png_mirror
+run_test "xclip failure does not republish after Wayland success" test_xclip_failure_does_not_republish_when_wayland_succeeds
+run_test "publish failures retry when Wayland fails" test_publish_failures_retry_when_wayland_fails
 run_test "Wayland publish runs after xclip mirror" test_wayland_publish_runs_after_xclip_mirror
 run_test "invalid env values fall back" test_invalid_env_values_fall_back
+run_test "HOME unset fails clearly" test_home_unset_fails_clearly
 run_test "second instance exits cleanly on lock" test_second_instance_exits_cleanly_on_lock
 run_test "daemon ignores SIGHUP from spawning shell" test_daemon_ignores_sighup
 run_test "daemon survives mktemp failure" test_mktemp_failure_does_not_crash
