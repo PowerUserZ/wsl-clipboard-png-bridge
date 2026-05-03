@@ -6,7 +6,48 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- Clipboard content signatures now hash the full image stream instead of a
+  bounded prefix. This closes the same-size/same-prefix back-to-back screenshot
+  miss where later pixels changed but the first hashed bytes did not.
+- Clipboard signature hashing no longer depends on `wc`; the daemon streams
+  directly into `sha256sum` and separately checks the `wl-paste`/`timeout`
+  status so partial timed-out reads are not cached.
+- `clipboard_signature()` now explicitly disables `errexit` inside its
+  subshell, preserving the intended "print empty and exit 0" contract when a
+  clipboard owner disappears or `wl-paste` fails during signature reads.
+- Daemon detection in `install.sh` and daemon stopping in `uninstall.sh` now
+  compare `/proc/*/cmdline` literally instead of using `pgrep` / `pkill`
+  regex matching. This keeps unusual home paths containing regex
+  metacharacters from mis-matching.
+- `install.sh` and `uninstall.sh` now preserve existing `~/.bashrc`
+  permissions when rewriting the managed block, and sentinel detection matches
+  exact lines only so ordinary user text containing sentinel strings is not
+  treated as a managed block.
+- `uninstall.sh` now refuses mismatched or duplicate managed-block sentinels
+  instead of deleting a possibly ambiguous range from `~/.bashrc`.
+- `install.sh` now checks for `tr`, which its literal `/proc` cmdline helper
+  uses to normalize NUL-separated argv data.
+
+### Added
+- Regression coverage for same-size/same-prefix screenshot changes and for
+  literal daemon cmdline detection.
+- Regression coverage for signature-read failures so transient `wl-paste`
+  errors do not kill the daemon.
+- Regression coverage for `uninstall.sh` managed-block removal, partial-block
+  refusal, installed-file cleanup, lock-file cleanup, and literal daemon
+  cmdline matching.
+- Regression coverage for preserving restrictive `.bashrc` permissions and
+  ignoring sentinel text embedded inside ordinary shell lines.
+- Regression coverage for `uninstall.sh` refusing mismatched sentinel blocks
+  while preserving the original `.bashrc`.
+
 ### Documentation
+- README now shows an immutable local-clone install path before the moving
+  `main` one-shot installer.
+- README now documents that auto-start is currently installed through
+  `~/.bashrc` only, with zsh/fish users needing an equivalent startup hook or
+  manual start until systemd user-service support exists.
 - **README now documents the Claude Code paste keybinding override required
   on Warp for Windows.** This was the missing piece that made the project
   appear broken for users on the most common WSL2 + Warp setup: the daemon

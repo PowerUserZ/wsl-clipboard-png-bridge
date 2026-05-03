@@ -20,14 +20,14 @@ commands.
 ## Layout
 
 - `wsl-clipboard-png-bridge` — the daemon (bash script, no extension; the
-  script's literal cmdline is `bash <INSTALL_PATH>` — relevant for `pgrep`
-  matching during uninstall).
+  script's literal cmdline is `bash <INSTALL_PATH>` — relevant for literal
+  `/proc/*/cmdline` matching during install/uninstall).
 - `install.sh` — copies the daemon to `~/.local/bin/`, appends a
   sentinel-marked block to `~/.bashrc` for auto-start, and spawns the daemon.
   Idempotent.
 - `uninstall.sh` — reverse of `install.sh`.
-- `tests/run.sh` — regression tests for installer block replacement, daemon
-  retry/cache behavior, env fallback, and single-instance locking.
+- `tests/run.sh` — regression tests for installer/uninstaller block handling,
+  daemon retry/cache behavior, env fallback, and single-instance locking.
 - `.github/workflows/shellcheck.yml` — ShellCheck plus the Bash regression
   suite.
 - `.github/workflows/claude-review.yml` — calls a reusable workflow from
@@ -74,12 +74,11 @@ with a small state machine. Every iteration:
    unchanged but contain an image (back-to-back screenshots produce identical
    type lists but different bytes).
 3. **Compute a content signature** if needed. Signature =
-   `<sha256 of first $hash_max_bytes bytes>-<total byte count>`. The byte
-   count defeats prefix-only collisions (two 4K screenshots with the same
-   taskbar region would otherwise share a hash). Empty result means
-   "read failed" — callers treat empty as *unknown* and refuse to overwrite
-   the prior signature. Single-pass: `tee -p` splits one `wl-paste` read
-   into the truncated hash input and a full-stream byte counter.
+   `<sha256 of full clipboard bytes>`. Empty result means "read failed" —
+   callers treat empty as *unknown* and refuse to overwrite the prior
+   signature. The stream is hashed directly, while the `wl-paste`/`timeout`
+   status is written to a private temp file so partial timed-out reads are not
+   cached.
 4. **Convert + publish** if `(types, signature)` changed and clipboard holds
    a PNG or BMP. Convert via `convert` with wall-clock `timeout` AND
    `-limit memory/map/disk`. Publish to Wayland (`wl-copy`) and X11 (`xclip`),
@@ -126,8 +125,7 @@ reproduction: `CLIPBOARD_DEBUG=1 ./wsl-clipboard-png-bridge 2>~/wcpb.log`.
 | `CLIPBOARD_ACTIVE_WINDOW_SEC` | `5` | Seconds to stay in fast-poll mode after a successful publish (since 0.1.5). |
 | `CLIPBOARD_CONVERT_TIMEOUT` | `5` | Wall-clock cap on one ImageMagick run (positive int; `0` is rejected — it would fire immediately and break every conversion silently). |
 | `CLIPBOARD_SIGNATURE_EVERY` | `3` | Hash bytes every N polls when types are unchanged. |
-| `CLIPBOARD_HASH_TIMEOUT` | `2` | Cap on the whole signature read+hash subshell. |
-| `CLIPBOARD_HASH_MAX_BYTES` | `8388608` | Bytes hashed per signature (capped to bound stalls on huge clipboards). |
+| `CLIPBOARD_HASH_TIMEOUT` | `2` | Cap on the signature hashing stage; the `wl-paste` read is separately capped by `CLIPBOARD_IO_TIMEOUT`. |
 | `CLIPBOARD_IO_TIMEOUT` | `2` | Cap on any single `wl-paste`/`wl-copy`/`xclip` call. |
 | `CLIPBOARD_CONVERT_MEMORY_MB` / `CLIPBOARD_CONVERT_DISK_MB` | tuned for 4K BMP | ImageMagick `-limit` ceilings. The memory value is also used for `-limit map`. |
 | `CLIPBOARD_DEBUG` | `0` | Set to `1` for ms-stamped diagnostics on stderr (since 0.1.5). |
@@ -138,11 +136,13 @@ reproduction: `CLIPBOARD_DEBUG=1 ./wsl-clipboard-png-bridge 2>~/wcpb.log`.
 These are real bugs we already paid for. The code looks plausible without
 them; the comments at each site explain why.
 
-- **`uninstall.sh` — `pgrep -fx`, not `pkill -f`.** The daemon's cmdline is
-  exactly `bash <INSTALL_PATH>`. `pkill -f "$INSTALL_PATH"` matched the
-  shell *running uninstall.sh* (which has the path embedded in its own
-  cmdline) and killed its own parent. Use `pgrep -fx` to require an exact
-  full-cmdline match. Commit `ed05d2c`.
+- **`install.sh` / `uninstall.sh` daemon lookup uses literal
+  `/proc/*/cmdline` comparison, not `pgrep` / `pkill -f`.** The daemon's
+  cmdline is exactly `bash <INSTALL_PATH>`. `pkill -f "$INSTALL_PATH"`
+  matched the shell *running uninstall.sh* (which has the path embedded in its
+  own cmdline) and killed its own parent. Later `pgrep -fx` avoided substring
+  matches but still interpreted regex metacharacters in unusual home paths.
+  Keep the literal `/proc` comparison.
 - **`uninstall.sh` — refuses to strip the bashrc block when only the START
   sentinel is present.** A naive `sed "/START/,/END/d"` deletes from the
   start sentinel to EOF if the user removed the END sentinel manually,
@@ -154,6 +154,9 @@ them; the comments at each site explain why.
   another daemon already holds the lock (observed to crash Warp for Windows
   with "Shell process exited prematurely"). The daemon does its own
   single-instance flock; the bashrc side just spawns. Commit `e45f477`.
+- **Auto-start currently writes only `~/.bashrc`.** Do not claim zsh/fish
+  auto-start works unless install.sh grows explicit support or systemd user
+  service support. README should keep this limitation visible.
 - **CI workflows must stay pinned to commit SHAs**, not tags. Both
   `shellcheck.yml` (`ludeeus/action-shellcheck@00cae5...`) and
   `claude-review.yml` (the `PowerUserZ/.github` reusable workflow) are
@@ -162,19 +165,13 @@ them; the comments at each site explain why.
   and the daemon's filename has no extension — CI lists it explicitly under
   `additional_files`. If you rename the daemon, update the workflow.
 - **`clipboard_signature` is `() (...)` — a subshell-function — by design.**
-  The body sets `set +o pipefail` to work around `head -c N` closing its
-  stdin and tripping pipefail on the upstream `wl-paste`'s SIGPIPE; the
-  subshell scope keeps that change from leaking to the parent shell where
-  pipefail is mandatory. Don't convert this back to a `() { ... }` regular
-  function. Commit for v0.1.4.
-- **`tee -p` is REQUIRED in `clipboard_signature`'s pipeline.** Default
-  GNU `tee` exits immediately on the first pipe write error; once
-  `head -c N` closes the >(...) end, plain `tee` stops forwarding to the
-  downstream `wc -c` as well, and the total byte count under-reports by
-  ~50% (capped to `hash_max_bytes` plus tee's kernel buffer). `-p` switches
-  to `warn-nopipe` so tee logs the broken pipe to stderr but keeps
-  streaming. Empirically caught with mock 16 MiB / 33 MiB streams during
-  v0.1.4 development. Commit for v0.1.4.
+  The body has a local trap for its temp file and keeps any shell-option
+  changes scoped away from the parent where `set -euo pipefail` is mandatory.
+  Don't convert this back to a `() { ... }` regular function.
+- **`clipboard_signature` hashes the full stream.** Do not reintroduce a
+  bounded-prefix signature. Prefix+size signatures miss same-sized screenshots
+  when only later pixels change. Regression covered by
+  `tests/run.sh::test_same_size_same_prefix_bmp_change_republishes`.
 - **`clipboard_signature` always exits 0 (prints empty on failure).**
   Callers use `var=$(clipboard_signature ...)` and the parent shell has
   `set -e`. A nonzero return from a command substitution propagates and
@@ -188,11 +185,12 @@ them; the comments at each site explain why.
   "another instance is already running". The block comment above the
   `LOCK_FILE` section explains the failure mode in detail. Don't drop
   the `9>&-`. Commit for v0.1.4.
-- **`install.sh` daemon-running check uses `pgrep -fx "bash $INSTALL_PATH"`,
-  not `pgrep -f $INSTALL_PATH`.** Same reason as the uninstall.sh fix
-  above — plain `-f` matches every process whose cmdline contains the
-  install path, including the verifying shell, falsely reporting
-  "daemon running" when the daemon failed to start. Commit for v0.1.4.
+- **`install.sh` daemon-running check uses the same literal `/proc` helper
+  as `uninstall.sh`.** Plain `pgrep -f` matches every process whose cmdline
+  contains the install path, including the verifying shell, falsely reporting
+  "daemon running" when the daemon failed to start. `pgrep -fx` is better but
+  still regex-based. Regression covered by
+  `tests/run.sh::test_installer_detects_daemon_with_literal_proc_cmdline`.
 - **`debug "...$(...)..."` arguments are evaluated EVEN WHEN `debug()` is
   the no-op stub.** Bash expands `$(...)` in command arguments before the
   function body runs; a `debug() { :; }` body never executes the

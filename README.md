@@ -64,7 +64,7 @@ What each package supplies:
 | `wl-clipboard` | `wl-paste`, `wl-copy`                 | Read / write the WSLg Wayland clipboard |
 | `xclip`        | `xclip`                               | Mirror the converted PNG onto the X11 clipboard |
 | `imagemagick`  | `convert`                             | BMP → PNG conversion |
-| `coreutils`    | `mktemp`, `sha256sum`, `wc`           | Temp files, content hashing for change detection |
+| `coreutils`    | `mktemp`, `sha256sum`, `tr`           | Temp files, content hashing, literal `/proc` cmdline checks |
 | `util-linux`   | `flock`, `timeout`                    | Single-instance lock; per-call IPC timeouts |
 | `curl`         | `curl`                                | Used **only** by the one-shot installer below — skip if you cloned the repo |
 
@@ -73,16 +73,23 @@ missing; it never invokes `sudo` itself.
 
 ### 2. Run the installer
 
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/PowerUserZ/wsl-clipboard-png-bridge/main/install.sh)
-```
-
-Or, from a local clone (no `curl` needed):
+Recommended immutable path:
 
 ```bash
 git clone https://github.com/PowerUserZ/wsl-clipboard-png-bridge.git
 cd wsl-clipboard-png-bridge
+git checkout <reviewed-tag-or-commit-sha>
 bash install.sh
+```
+
+For example, replace `<reviewed-tag-or-commit-sha>` with a release tag such as
+`v0.1.7`, or with a specific commit SHA you have reviewed. This avoids
+curl-piping the moving `main` branch.
+
+Convenience one-shot installer (tracks the latest `main` branch):
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/PowerUserZ/wsl-clipboard-png-bridge/main/install.sh)
 ```
 
 The installer:
@@ -94,6 +101,12 @@ The installer:
    behaviour comes from the daemon's own `flock`, so duplicate spawns exit
    silently.
 4. Starts the daemon immediately.
+
+Auto-start is currently Bash-oriented: the managed block is written only to
+`~/.bashrc`. If your WSL login shell is zsh, fish, or another shell that does
+not read `~/.bashrc`, the daemon still starts immediately during install, but
+future shell sessions will need an equivalent startup hook or a manual daemon
+start until systemd user-service support exists.
 
 ## Verify
 
@@ -211,8 +224,10 @@ with a warning on stderr.
 | `CLIPBOARD_CONVERT_MEMORY_MB`  | `256`       | `convert -limit memory/map` ceiling (MiB, positive integer). |
 | `CLIPBOARD_CONVERT_DISK_MB`    | `512`       | `convert -limit disk` ceiling (MiB, positive integer). |
 | `CLIPBOARD_IO_TIMEOUT`         | `2`         | Per-call timeout (seconds) on every blocking `wl-paste`, `wl-copy`, and `xclip` invocation. Prevents a hung selection owner from wedging the loop. |
-| `CLIPBOARD_HASH_TIMEOUT`       | `2`         | Total timeout (seconds) for one signature computation. |
-| `CLIPBOARD_HASH_MAX_BYTES`     | `8388608`   | Bytes of clipboard content hashed per signature (positive integer). The full byte count is mixed into the signature alongside the prefix hash to defeat prefix-only collisions. |
+| `CLIPBOARD_HASH_TIMEOUT`       | `2`         | Timeout (seconds) for the signature hashing stage. The clipboard read itself is capped by `CLIPBOARD_IO_TIMEOUT`. |
+
+Signatures hash the full clipboard image stream. This avoids missing same-sized
+screenshots whose first bytes are identical but whose later pixels changed.
 
 ### Diagnostics
 
@@ -246,6 +261,8 @@ with a warning on stderr.
   watching today.
 * Tested on WSL2 Ubuntu 24.04 only; other Debian-family distributions should
   work but are not CI-tested.
+* Auto-start is installed through `~/.bashrc` only. zsh/fish users should add
+  an equivalent shell startup hook or start the daemon manually after boot.
 * Getting the paste *keystroke* to Claude Code's TUI is terminal-dependent.
   On **Warp for Windows** the default `Ctrl+V` does not work and a one-time
   Claude Code keybinding override is required (see
@@ -259,8 +276,10 @@ with a warning on stderr.
 bash <(curl -fsSL https://raw.githubusercontent.com/PowerUserZ/wsl-clipboard-png-bridge/main/uninstall.sh)
 ```
 
-Or manually: kill the daemon, delete `~/.local/bin/wsl-clipboard-png-bridge`,
-and remove the sentinel-marked block from `~/.bashrc`.
+For immutable uninstall, use the same reviewed tag or commit SHA you installed
+from in the raw GitHub URL. Or manually: kill the daemon, delete
+`~/.local/bin/wsl-clipboard-png-bridge`, and remove the sentinel-marked block
+from `~/.bashrc`.
 
 ## Related
 

@@ -16,6 +16,7 @@ SENTINEL_END="# <<< ${SCRIPT_NAME} <<<"
 
 RAW_BASE="${WCPB_RAW_BASE:-https://raw.githubusercontent.com/PowerUserZ/wsl-clipboard-png-bridge/main}"
 SOURCE_SCRIPT="$(dirname "$(readlink -f "$0")")/$SCRIPT_NAME"
+PROC_ROOT="${WCPB_PROC_ROOT:-/proc}"
 tmp=""
 tmp_bashrc=""
 
@@ -32,6 +33,22 @@ cleanup() {
 }
 trap cleanup EXIT
 
+find_daemon_pids() {
+    local proc pid cmdline
+    for proc in "$PROC_ROOT"/[0-9]*; do
+        [ -r "$proc/cmdline" ] || continue
+        pid="${proc##*/}"
+        # The daemon's literal argv is "bash <INSTALL_PATH>". Compare argv
+        # after NUL-to-space normalization instead of using pgrep's regex
+        # matcher; home paths may legally contain regex metacharacters.
+        cmdline="$(tr '\0' ' ' <"$proc/cmdline" 2>/dev/null || true)"
+        cmdline="${cmdline% }"
+        if [ "$cmdline" = "bash $INSTALL_PATH" ]; then
+            printf '%s\n' "$pid"
+        fi
+    done
+}
+
 # --- environment checks ---------------------------------------------------
 
 if ! { [ -r /proc/sys/kernel/osrelease ] && grep -qi "microsoft" /proc/sys/kernel/osrelease; }; then
@@ -42,7 +59,7 @@ if ! grep -qi "wsl2" /proc/sys/kernel/osrelease; then
 fi
 
 missing=()
-required_cmds=(wl-paste wl-copy xclip convert timeout flock mktemp sha256sum)
+required_cmds=(wl-paste wl-copy xclip convert timeout flock mktemp sha256sum tr)
 if [ ! -f "$SOURCE_SCRIPT" ]; then
     required_cmds+=(curl)
 fi
@@ -96,11 +113,17 @@ escape_sed_literal() {
     printf '%s' "$1" | sed 's/[][\/.^$*]/\\&/g'
 }
 
+replace_bashrc_from_tmp() {
+    # Preserve an existing .bashrc mode, ownership, and symlink target. `install
+    # -m 0644` would silently relax a user's more restrictive permissions.
+    cp "$tmp_bashrc" "$BASHRC"
+}
+
 bashrc_start_count=0
 bashrc_end_count=0
 if [ -f "$BASHRC" ]; then
-    bashrc_start_count="$(grep -Fc "$SENTINEL_START" "$BASHRC" || true)"
-    bashrc_end_count="$(grep -Fc "$SENTINEL_END" "$BASHRC" || true)"
+    bashrc_start_count="$(grep -Fxc "$SENTINEL_START" "$BASHRC" || true)"
+    bashrc_end_count="$(grep -Fxc "$SENTINEL_END" "$BASHRC" || true)"
 fi
 
 if [ "$bashrc_start_count" -eq 1 ] && [ "$bashrc_end_count" -eq 0 ]; then
@@ -116,9 +139,9 @@ elif [ "$bashrc_start_count" -eq 1 ]; then
     tmp_bashrc="$(mktemp)"
     start_re="$(escape_sed_literal "$SENTINEL_START")"
     end_re="$(escape_sed_literal "$SENTINEL_END")"
-    sed "/$start_re/,/$end_re/d" "$BASHRC" >"$tmp_bashrc"
+    sed "/^$start_re\$/,/^$end_re\$/d" "$BASHRC" >"$tmp_bashrc"
     emit_bashrc_block >>"$tmp_bashrc"
-    install -m 0644 "$tmp_bashrc" "$BASHRC"
+    replace_bashrc_from_tmp
     rm -f "$tmp_bashrc"
     tmp_bashrc=""
 else
@@ -132,13 +155,11 @@ log "starting daemon (duplicate spawns exit silently via the daemon's self-lock)
 nohup "$INSTALL_PATH" >/dev/null 2>&1 &
 disown
 
-# Match the daemon's exact full cmdline ("bash <INSTALL_PATH>") with -fx, the
-# same pattern uninstall.sh uses. Plain `pgrep -f "$INSTALL_PATH"` matches any
-# process whose cmdline merely *contains* the install path — including this
-# very script, an editor with the path open, or a verifying shell — and would
-# falsely report "daemon running" when the actual daemon failed to start.
+# Match the daemon's exact full cmdline ("bash <INSTALL_PATH>") literally via
+# /proc, the same approach uninstall.sh uses. Avoid pgrep regex matching here:
+# paths under $HOME may contain regex metacharacters even though that is rare.
 sleep 0.5
-if pgrep -fx "bash $INSTALL_PATH" >/dev/null 2>&1; then
+if [ -n "$(find_daemon_pids | sed -n '1p')" ]; then
     log "daemon running"
 else
     warn "daemon did not start; inspect \`$INSTALL_PATH\` manually"
@@ -201,4 +222,7 @@ test end-to-end:
 
 uninstall:
   bash <(curl -fsSL https://raw.githubusercontent.com/PowerUserZ/wsl-clipboard-png-bridge/main/uninstall.sh)
+
+For immutable installs, run uninstall.sh from the same reviewed checkout or
+replace "main" in the raw URL with the same reviewed tag/commit SHA.
 EOF
