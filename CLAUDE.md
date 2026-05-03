@@ -7,7 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 A single-file Bash daemon that polls the WSLg Wayland clipboard for `image/bmp`
 (produced by Windows screenshot tools — Snipping Tool / `Win+Shift+S` — and
 proxied through WSLg), converts it to PNG via ImageMagick, and republishes the
-PNG to **both** the Wayland (`wl-copy`) and X11 (`xclip`) clipboards.
+PNG to the Wayland clipboard (`wl-copy`) with a best-effort X11 mirror
+(`xclip`).
 
 The point is to make WSL-side tools that only accept `image/png` (notably
 Claude Code — see `anthropics/claude-code#25935`) able to receive Windows
@@ -50,7 +51,7 @@ tests/run.sh
 # End-to-end smoke test on a WSL2 host:
 #   1. Take a screenshot with Win+Shift+S
 #   2. Run: wl-paste --list-types          # should now include image/png
-#   3. Run: xclip -selection clipboard -t TARGETS -o   # should include image/png
+#   3. Optional: xclip -selection clipboard -t TARGETS -o may include image/png
 ```
 
 There is no `--help` and no single-test invocation. Clipboard edge cases should
@@ -81,13 +82,15 @@ with a small state machine. Every iteration:
    cached.
 4. **Convert + publish** if `(types, signature)` changed and clipboard holds
    a PNG or BMP. Convert via `convert` with wall-clock `timeout` AND
-   `-limit memory/map/disk`. Publish to Wayland (`wl-copy`) and X11 (`xclip`),
-   each with `9>&-` to drop the daemon's lock fd in the daemonizing child.
+   `-limit memory/map/disk`. Publish a best-effort X11 mirror (`xclip`) first,
+   then publish Wayland (`wl-copy`) last so WSLg leaves `image/png` available to
+   Wayland-native consumers. Both calls use `9>&-` to drop the daemon's lock fd
+   in the daemonizing child.
 5. **Advance the state cache** (`last_types`, `last_signature`) **only after
-   both publish paths are ready**. Wayland must either already hold PNG or
-   accept the `wl-copy` write, and X11 must accept the `xclip` mirror. A failed
-   conversion or partial publish keeps the old signature state so the periodic
-   hash retry re-attempts the missing side.
+   both publish paths report ready**. X11 mirroring is attempted first, but
+   Wayland is published last because WSLg can let an `xclip` write disturb the
+   Wayland selection owner. A failed conversion or partial publish keeps the old
+   signature state so the periodic hash retry re-attempts the missing side.
 
 Every decision point above is instrumented with `debug "..."` calls that
 are no-ops unless `CLIPBOARD_DEBUG=1` is set. Use that for any bug
@@ -95,10 +98,10 @@ reproduction: `CLIPBOARD_DEBUG=1 ./wsl-clipboard-png-bridge 2>~/wcpb.log`.
 
 ### Invariants the code depends on
 
-- **`did_work` is true only when Wayland and X11 are both ready.** Wayland may
-  already hold PNG, but X11 still has to accept the mirror. Setting success on
-  PNG temp-file existence, or on only one publish target, caches signatures for
-  screenshots that did not reach the full bridge.
+- **`wl-copy` must run after `xclip`.** Real WSLg testing showed `xclip` writes
+  can clear the Wayland clipboard owner. The daemon may attempt X11 mirroring,
+  but the final operation must be `wl-copy` so the primary `image/png` target
+  remains available.
 - **Post-conversion signature refresh must re-read the MIME list.** After
   BMP → PNG, the clipboard advertises `image/png`, not `image/bmp`. Hashing
   with the stale `has_bmp` flag returns empty (the BMP slot is gone),

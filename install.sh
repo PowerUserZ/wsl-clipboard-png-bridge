@@ -59,7 +59,7 @@ if ! grep -qi "wsl2" /proc/sys/kernel/osrelease; then
 fi
 
 missing=()
-required_cmds=(wl-paste wl-copy xclip convert timeout flock mktemp sha256sum tr)
+required_cmds=(wl-paste wl-copy xclip convert timeout flock mktemp sha256sum tr setsid)
 if [ ! -f "$SOURCE_SCRIPT" ]; then
     required_cmds+=(curl)
 fi
@@ -102,8 +102,12 @@ emit_bashrc_block() {
 # whenever another daemon already held the lock (observed to crash Warp
 # for Windows as "Shell process exited prematurely").
 if command -v wl-paste >/dev/null 2>&1 && [ -x "\$HOME/.local/bin/$SCRIPT_NAME" ]; then
-    "\$HOME/.local/bin/$SCRIPT_NAME" >/dev/null 2>&1 &
-    disown
+    if command -v setsid >/dev/null 2>&1; then
+        setsid -f "\$HOME/.local/bin/$SCRIPT_NAME" >/dev/null 2>&1
+    else
+        nohup "\$HOME/.local/bin/$SCRIPT_NAME" >/dev/null 2>&1 &
+        disown
+    fi
 fi
 EOF
     printf '%s\n' "$SENTINEL_END"
@@ -152,8 +156,7 @@ fi
 # --- start the daemon now ------------------------------------------------
 
 log "starting daemon (duplicate spawns exit silently via the daemon's self-lock)"
-nohup "$INSTALL_PATH" >/dev/null 2>&1 &
-disown
+setsid -f "$INSTALL_PATH" >/dev/null 2>&1
 
 # Match the daemon's exact full cmdline ("bash <INSTALL_PATH>") literally via
 # /proc, the same approach uninstall.sh uses. Avoid pgrep regex matching here:

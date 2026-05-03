@@ -16,6 +16,17 @@ project uses [Semantic Versioning](https://semver.org/).
 - `clipboard_signature()` now explicitly disables `errexit` inside its
   subshell, preserving the intended "print empty and exit 0" contract when a
   clipboard owner disappears or `wl-paste` fails during signature reads.
+- The daemon no longer exits after a successful publish when the post-publish
+  signature refresh comes back empty; it now treats that as an unknown
+  signature instead of letting `set -e` trip on a false `[ -n "$refreshed" ]`.
+- Publishing now runs the best-effort X11 mirror before the final Wayland
+  `wl-copy` write, because real WSLg testing showed `xclip` can otherwise clear
+  the Wayland image/png selection owner.
+- The daemon now ignores SIGHUP so `nohup ... &` startup from `install.sh` and
+  the managed `.bashrc` block actually survives after the spawning shell exits.
+- `install.sh` and the managed `.bashrc` block now prefer `setsid -f` for
+  daemon startup so non-interactive parent-shell cleanup does not terminate the
+  bridge immediately after installation.
 - Daemon detection in `install.sh` and daemon stopping in `uninstall.sh` now
   compare `/proc/*/cmdline` literally instead of using `pgrep` / `pkill`
   regex matching. This keeps unusual home paths containing regex
@@ -34,6 +45,10 @@ project uses [Semantic Versioning](https://semver.org/).
   literal daemon cmdline detection.
 - Regression coverage for signature-read failures so transient `wl-paste`
   errors do not kill the daemon.
+- Regression coverage for empty post-publish signature refreshes.
+- Regression coverage for keeping the final Wayland PNG publish after the X11
+  mirror path.
+- Regression coverage for SIGHUP survival after daemon startup.
 - Regression coverage for `uninstall.sh` managed-block removal, partial-block
   refusal, installed-file cleanup, lock-file cleanup, and literal daemon
   cmdline matching.
