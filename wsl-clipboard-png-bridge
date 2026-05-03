@@ -23,6 +23,7 @@
 #   side cannot freeze the loop.
 
 set -euo pipefail
+: "${HOME:?wsl-clipboard-png-bridge: HOME must be set}"
 
 # --- configuration --------------------------------------------------------
 
@@ -174,9 +175,10 @@ trap cleanup EXIT
 # explicit exit, bash resumes the loop after the trap handler returns.
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
-# The daemon is intentionally started through `nohup ... &` from install.sh and
-# from the managed .bashrc block. Do not turn SIGHUP back into an exit signal
-# here; doing so makes the daemon die as soon as the spawning shell closes.
+# The daemon is intentionally started through `setsid -f` (with a `nohup ... &`
+# fallback) from install.sh and from the managed .bashrc block. Do not turn
+# SIGHUP back into an exit signal here; doing so makes the daemon die as soon
+# as the spawning shell closes.
 trap '' HUP
 
 # --- main loop ------------------------------------------------------------
@@ -375,7 +377,7 @@ while true; do
                     wayland_ready=true
                     wl_copy_status="ok"
                 fi
-                if $wayland_ready && $x11_ready; then
+                if $wayland_ready; then
                     did_work=true
                     # Extend the fast-poll window so back-to-back screenshots
                     # stay responsive without paying idle-poll latency for
@@ -395,9 +397,11 @@ while true; do
             tmp=""
         fi
 
-        # Only advance state when we either finished work or the clipboard
-        # had no image for us to process. A failed conversion keeps the old
-        # state so the next poll retries instead of silently dropping the
+        # Only advance state when the primary Wayland publish finished or the
+        # clipboard had no image for us to process. X11 mirroring is best-effort;
+        # a failed xclip call should not churn the same Wayland-ready PNG every
+        # signature tick. A failed conversion or failed Wayland publish keeps the
+        # old state so the next poll retries instead of silently dropping the
         # screenshot.
         if $did_work; then
             # Re-read types AFTER our writes — a BMP we just converted will

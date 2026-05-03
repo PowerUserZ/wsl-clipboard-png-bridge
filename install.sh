@@ -5,6 +5,7 @@
 # bashrc block, and start (or keep alive) exactly one daemon.
 
 set -euo pipefail
+: "${HOME:?wsl-clipboard-png-bridge install.sh: HOME must be set}"
 
 SCRIPT_NAME="wsl-clipboard-png-bridge"
 INSTALL_DIR="$HOME/.local/bin"

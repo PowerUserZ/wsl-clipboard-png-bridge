@@ -5,6 +5,7 @@
 # from ~/.bashrc, and removes the lock file. Leaves apt packages installed.
 
 set -euo pipefail
+: "${HOME:?wsl-clipboard-png-bridge uninstall.sh: HOME must be set}"
 
 SCRIPT_NAME="wsl-clipboard-png-bridge"
 INSTALL_PATH="$HOME/.local/bin/$SCRIPT_NAME"
