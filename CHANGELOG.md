@@ -6,6 +6,8 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.8] — 2026-05-03
+
 ### Fixed
 - Clipboard content signatures now hash the full image stream instead of a
   bounded prefix. This closes the same-size/same-prefix back-to-back screenshot
@@ -343,7 +345,8 @@ Initial public release.
   `CLIPBOARD_WATCH_INTERVAL` and `CLIPBOARD_CONVERT_TIMEOUT`, startup
   dependency check.
 
-[Unreleased]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/compare/v0.1.7...HEAD
+[Unreleased]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/compare/v0.1.8...HEAD
+[0.1.8]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.8
 [0.1.1]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.1
 [0.1.2]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.2
 [0.1.3]: https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/tag/v0.1.3
