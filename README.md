@@ -62,10 +62,10 @@ What each package supplies:
 | Package        | Provides                              | Why it is needed |
 | -------------- | ------------------------------------- | ---------------- |
 | `wl-clipboard` | `wl-paste`, `wl-copy`                 | Read / write the WSLg Wayland clipboard |
-| `xclip`        | `xclip`                               | Mirror the converted PNG onto the X11 clipboard |
+| `xclip`        | `xclip`                               | Best-effort X11 mirror before the final Wayland publish |
 | `imagemagick`  | `convert`                             | BMP → PNG conversion |
 | `coreutils`    | `mktemp`, `sha256sum`, `tr`           | Temp files, content hashing, literal `/proc` cmdline checks |
-| `util-linux`   | `flock`, `timeout`                    | Single-instance lock; per-call IPC timeouts |
+| `util-linux`   | `flock`, `timeout`, `setsid`          | Single-instance lock; per-call IPC timeouts; daemon session detach |
 | `curl`         | `curl`                                | Used **only** by the one-shot installer below — skip if you cloned the repo |
 
 The installer fails fast with the same `sudo apt` line above if any binary is
@@ -128,12 +128,11 @@ End-to-end test:
 > use `Alt+V` instead of `Ctrl+V` to paste images. This is independent of
 > the daemon — it lives entirely on the Claude Code side.
 
-This daemon's job is to put `image/png` on the WSL Wayland *and* X11
-clipboards. After it runs, your Linux clipboard is image-ready and Claude
-Code (which reads X11 first via `xclip`, falling back to `wl-paste`) can
-attach the screenshot. **However**, getting the *paste keystroke* to reach
-Claude Code's TUI is a separate problem and depends on which Windows
-terminal you use.
+This daemon's job is to put `image/png` on the WSL Wayland clipboard, while
+attempting a best-effort X11 mirror before the final Wayland publish. After it
+runs, your Linux clipboard is image-ready and Claude Code can attach the
+screenshot. **However**, getting the *paste keystroke* to reach Claude Code's
+TUI is a separate problem and depends on which Windows terminal you use.
 
 ### Why default `Ctrl+V` does not work on Warp for Windows
 
@@ -191,8 +190,8 @@ WSL Wayland clipboard (image/bmp)
    ▼
 ImageMagick: BMP → PNG (5 s timeout)
    │
-   ├─► wl-copy  (Wayland clipboard, image/png)
-   └─► xclip    (X11 clipboard,    image/png)
+   ├─► xclip    (best-effort X11 mirror, image/png)
+   └─► wl-copy  (final Wayland clipboard publish, image/png)
         │
         ▼
 Claude Code Alt+V → chat:imagePaste → [Image #N]
@@ -242,7 +241,8 @@ screenshots whose first bytes are identical but whose later pixels changed.
   clipboard is treated as trusted input. The daemon runs as the current user
   only and opens no network sockets.
 * **Temp files.** Each conversion uses `mktemp` (0600 permissions) in `$TMPDIR`,
-  and a `trap` removes the file on normal exit, `INT`, `TERM`, or `HUP`.
+  and a `trap` removes the file on normal exit, `INT`, or `TERM`. `SIGHUP` is
+  ignored so the daemon survives the shell that spawned it via `nohup`.
 * **ImageMagick attack surface.** BMP parsing has had notable CVEs historically
   (e.g. ImageTragick — CVE-2016-3714). This bridge converts BMP bytes with a
   wall-clock timeout plus ImageMagick memory/map/disk limits to bound resource

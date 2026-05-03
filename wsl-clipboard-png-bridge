@@ -3,9 +3,10 @@
 #
 # Poll the WSLg Wayland clipboard. When it contains image/bmp (as delivered by
 # Windows screenshot tools such as Snipping Tool / Win+Shift+S) but not
-# image/png, convert to PNG and publish the PNG to both the Wayland and the
-# X11 clipboards. This lets WSL-side tools that only accept image/png (notably
-# Claude Code — see anthropics/claude-code#25935) receive the screenshot.
+# image/png, convert to PNG and publish the PNG to the Wayland clipboard, with
+# a best-effort X11 mirror. This lets WSL-side tools that only accept image/png
+# (notably Claude Code — see anthropics/claude-code#25935) receive the
+# screenshot.
 #
 # Why polling, not wl-paste --watch:
 #   WSLg ships the Weston compositor, which does not implement the wlroots
@@ -173,7 +174,10 @@ trap cleanup EXIT
 # explicit exit, bash resumes the loop after the trap handler returns.
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
-trap 'cleanup; exit 129' HUP
+# The daemon is intentionally started through `nohup ... &` from install.sh and
+# from the managed .bashrc block. Do not turn SIGHUP back into an exit signal
+# here; doing so makes the daemon die as soon as the spawning shell closes.
+trap '' HUP
 
 # --- main loop ------------------------------------------------------------
 
@@ -351,23 +355,12 @@ while true; do
             fi
 
             if $ok && [ -s "$tmp" ]; then
-                # Count the publish step as successful only when both consumer
-                # paths are ready: Wayland must already hold PNG or accept our
-                # wl-copy write, and X11 must accept the xclip mirror. If one
-                # side fails transiently, keep `did_work=false` so the periodic
-                # signature retry re-attempts the missing side instead of
-                # caching an image that only reached half of the bridge.
+                # Publish to X11 first, then Wayland. On WSLg, xclip writes can
+                # disturb the Wayland selection owner; leaving wl-copy as the
+                # final writer keeps image/png available to Wayland-native
+                # consumers such as Claude Code.
                 wayland_ready=false
                 x11_ready=false
-                wl_copy_status="fail"   # already_png|ok|fail
-                if $has_png_wl; then
-                    # Wayland already has PNG; we only need to mirror to X11.
-                    wayland_ready=true
-                    wl_copy_status="already_png"
-                elif timeout "$io_timeout" wl-copy -t image/png <"$tmp" 2>/dev/null 9>&-; then
-                    wayland_ready=true
-                    wl_copy_status="ok"
-                fi
                 # 9>&- closes the lock fd in the wl-copy / xclip child before
                 # exec — without it, the self-daemonizing selection owner
                 # would inherit fd 9 and keep flock(2) held even after this
@@ -376,6 +369,11 @@ while true; do
                 if timeout "$io_timeout" xclip -selection clipboard -t image/png -i "$tmp" 2>/dev/null 9>&-; then
                     x11_ready=true
                     xclip_status="ok"
+                fi
+                wl_copy_status="fail"
+                if timeout "$io_timeout" wl-copy -t image/png <"$tmp" 2>/dev/null 9>&-; then
+                    wayland_ready=true
+                    wl_copy_status="ok"
                 fi
                 if $wayland_ready && $x11_ready; then
                     did_work=true
@@ -415,7 +413,9 @@ while true; do
                 *$'\nimage/png\n'*) refreshed="$(clipboard_signature "image/png")" ;;
                 *$'\nimage/bmp\n'*) refreshed="$(clipboard_signature "image/bmp")" ;;
             esac
-            [ -n "$refreshed" ] && last_signature="$refreshed"
+            if [ -n "$refreshed" ]; then
+                last_signature="$refreshed"
+            fi
             debug "cache branch=advanced refreshed=${refreshed:0:16}.."
         elif $has_png_wl || $has_bmp; then
             # Conversion/read failed. Advance type state to avoid retrying on

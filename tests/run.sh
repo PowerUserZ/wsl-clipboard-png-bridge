@@ -87,6 +87,11 @@ SH
     write_executable "$fakebin/nohup" \
         '#!/usr/bin/env bash' \
         'exit 0'
+    # shellcheck disable=SC2016
+    write_executable "$fakebin/setsid" \
+        '#!/usr/bin/env bash' \
+        'if [ "${1:-}" = "-f" ]; then shift; fi' \
+        'exit 0'
     write_executable "$fakebin/pgrep" \
         '#!/usr/bin/env bash' \
         'exit 1'
@@ -120,7 +125,12 @@ case "${1:-}" in
         fi
         case "${2:-}" in
             image/bmp) cat "$state/bmp" ;;
-            image/png) cat "$state/png" ;;
+            image/png)
+                if [ "${FAKE_WL_PASTE_FAIL_PNG_AFTER_WL_COPY:-0}" = "1" ] && [ -f "$state/wayland_png" ]; then
+                    exit 1
+                fi
+                cat "$state/png"
+                ;;
             *) exit 1 ;;
         esac
         ;;
@@ -181,6 +191,9 @@ done
 if [ -n "$input" ]; then
     cp "$input" "$state/x11_png"
 fi
+if [ "${FAKE_XCLIP_CLEARS_WAYLAND:-0}" = "1" ]; then
+    rm -f "$state/wayland_png"
+fi
 SH
     chmod +x "$fakebin/xclip"
 
@@ -194,6 +207,9 @@ fi
 count=$((count + 1))
 printf '%s\n' "$count" >"$state/sleep_count"
 printf '%s\n' "${1:-}" >>"$state/sleeps"
+if [ -n "${FAKE_SLEEP_REAL_DELAY:-}" ]; then
+    /usr/bin/sleep "$FAKE_SLEEP_REAL_DELAY"
+fi
 if [ "${FAKE_MUTATE_AFTER_SLEEP:-0}" = "$count" ] && [ -f "$state/bmp_next" ]; then
     cp "$state/bmp_next" "$state/bmp"
     rm -f "$state/png" "$state/wayland_png"
@@ -239,7 +255,7 @@ EOF
 
     assert_contains "$out" "replacing managed block" || return 1
     assert_not_contains "$home/.bashrc" "        flock -n 9 || exit 0" || return 1
-    expected_spawn="\"\$HOME/.local/bin/wsl-clipboard-png-bridge\" >/dev/null 2>&1 &"
+    expected_spawn="setsid -f \"\$HOME/.local/bin/wsl-clipboard-png-bridge\" >/dev/null 2>&1"
     assert_contains "$home/.bashrc" "$expected_spawn" || return 1
     assert_contains "$home/.bashrc" "before" || return 1
     assert_contains "$home/.bashrc" "after" || return 1
@@ -380,6 +396,38 @@ test_xclip_failure_retries_png_mirror() {
     assert_eq "2" "$(cat "$state/xclip_count")" "xclip retry count" || return 1
 }
 
+test_wayland_publish_runs_after_xclip_mirror() {
+    local tmp fakebin home state status
+    tmp="$(new_tmp)"
+    fakebin="$tmp/bin"
+    home="$tmp/home"
+    state="$tmp/state"
+    mkdir -p "$home" "$state"
+    make_daemon_fakebin "$fakebin"
+    printf 'image/bmp\n' >"$state/types"
+    printf 'bmp-bytes' >"$state/bmp"
+
+    status=0
+    PATH="$fakebin:$PATH" \
+        HOME="$home" \
+        FAKE_STATE="$state" \
+        FAKE_XCLIP_CLEARS_WAYLAND=1 \
+        FAKE_SLEEP_LIMIT=1 \
+        WCPB_LOCK_FILE="$state/lock" \
+        CLIPBOARD_WATCH_INTERVAL=0.01 \
+        CLIPBOARD_IDLE_INTERVAL=0.01 \
+        CLIPBOARD_SIGNATURE_EVERY=1 \
+        bash "$ROOT/$SCRIPT_NAME" >"$tmp/out" 2>"$tmp/err" || status=$?
+
+    assert_eq "77" "$status" "daemon controlled sleep exit" || return 1
+    assert_eq "1" "$(cat "$state/xclip_count")" "xclip mirror call count" || return 1
+    assert_eq "1" "$(cat "$state/wl_copy_count")" "wl-copy final call count" || return 1
+    if [ ! -f "$state/wayland_png" ]; then
+        printf 'expected final wl-copy publish to restore Wayland PNG after xclip mirror\n' >&2
+        return 1
+    fi
+}
+
 test_invalid_env_values_fall_back() {
     local tmp fakebin home state status
     tmp="$(new_tmp)"
@@ -424,6 +472,43 @@ test_second_instance_exits_cleanly_on_lock() {
 
     assert_eq "0" "$(cat "$tmp/status")" "second instance exit status" || return 1
     assert_contains "$tmp/err" "another instance is already running; exiting" || return 1
+}
+
+test_daemon_ignores_sighup() {
+    local tmp fakebin home state daemon_pid
+    tmp="$(new_tmp)"
+    fakebin="$tmp/bin"
+    home="$tmp/home"
+    state="$tmp/state"
+    mkdir -p "$home" "$state"
+    make_daemon_fakebin "$fakebin"
+    : >"$state/types"
+
+    PATH="$fakebin:$PATH" \
+        HOME="$home" \
+        FAKE_STATE="$state" \
+        FAKE_SLEEP_LIMIT=100 \
+        FAKE_SLEEP_REAL_DELAY=0.05 \
+        WCPB_LOCK_FILE="$state/lock" \
+        CLIPBOARD_WATCH_INTERVAL=0.01 \
+        CLIPBOARD_IDLE_INTERVAL=0.01 \
+        bash "$ROOT/$SCRIPT_NAME" >"$tmp/out" 2>"$tmp/err" &
+    daemon_pid="$!"
+
+    /usr/bin/sleep 0.15
+    kill -HUP "$daemon_pid" 2>/dev/null || {
+        wait "$daemon_pid" 2>/dev/null || true
+        printf 'daemon exited before SIGHUP could be sent\n' >&2
+        return 1
+    }
+    /usr/bin/sleep 0.15
+    if ! kill -0 "$daemon_pid" 2>/dev/null; then
+        wait "$daemon_pid" 2>/dev/null || true
+        printf 'daemon exited after SIGHUP\n' >&2
+        return 1
+    fi
+    kill -TERM "$daemon_pid" 2>/dev/null || true
+    wait "$daemon_pid" 2>/dev/null || true
 }
 
 run_test() {
@@ -604,6 +689,34 @@ test_signature_read_failure_does_not_crash() {
     if [ -f "$state/xclip_count" ]; then
         assert_eq "0" "$(cat "$state/xclip_count")" "xclip not called after signature read failure" || return 1
     fi
+}
+
+test_empty_post_publish_refresh_does_not_crash() {
+    local tmp fakebin home state status
+    tmp="$(new_tmp)"
+    fakebin="$tmp/bin"
+    home="$tmp/home"
+    state="$tmp/state"
+    mkdir -p "$home" "$state"
+    make_daemon_fakebin "$fakebin"
+    printf 'image/bmp\n' >"$state/types"
+    printf 'bmp-bytes' >"$state/bmp"
+
+    status=0
+    PATH="$fakebin:$PATH" \
+        HOME="$home" \
+        FAKE_STATE="$state" \
+        FAKE_WL_PASTE_FAIL_PNG_AFTER_WL_COPY=1 \
+        FAKE_SLEEP_LIMIT=1 \
+        WCPB_LOCK_FILE="$state/lock" \
+        CLIPBOARD_WATCH_INTERVAL=0.01 \
+        CLIPBOARD_IDLE_INTERVAL=0.01 \
+        CLIPBOARD_SIGNATURE_EVERY=1 \
+        bash "$ROOT/$SCRIPT_NAME" >"$tmp/out" 2>"$tmp/err" || status=$?
+
+    assert_eq "77" "$status" "daemon survived empty post-publish refresh" || return 1
+    assert_eq "1" "$(cat "$state/wl_copy_count")" "wl-copy called before empty refresh" || return 1
+    assert_eq "1" "$(cat "$state/xclip_count")" "xclip called before empty refresh" || return 1
 }
 
 test_installer_detects_daemon_with_literal_proc_cmdline() {
@@ -796,13 +909,16 @@ run_test "installer refuses mismatched managed blocks" test_installer_refuses_mi
 run_test "installer ignores embedded sentinel text" test_installer_ignores_embedded_sentinel_text
 run_test "successful publish switches sleep to active interval" test_success_switches_sleep_to_active_interval
 run_test "xclip failure retries PNG mirror" test_xclip_failure_retries_png_mirror
+run_test "Wayland publish runs after xclip mirror" test_wayland_publish_runs_after_xclip_mirror
 run_test "invalid env values fall back" test_invalid_env_values_fall_back
 run_test "second instance exits cleanly on lock" test_second_instance_exits_cleanly_on_lock
+run_test "daemon ignores SIGHUP from spawning shell" test_daemon_ignores_sighup
 run_test "daemon survives mktemp failure" test_mktemp_failure_does_not_crash
 run_test "MIME prefix does not false-match exact line" test_mime_prefix_does_not_false_match
 run_test "post-publish refresh prevents republish" test_post_publish_refresh_prevents_republish
 run_test "same-size same-prefix BMP change republishes" test_same_size_same_prefix_bmp_change_republishes
 run_test "signature read failure does not crash daemon" test_signature_read_failure_does_not_crash
+run_test "empty post-publish refresh does not crash daemon" test_empty_post_publish_refresh_does_not_crash
 run_test "installer daemon check uses literal proc cmdline" test_installer_detects_daemon_with_literal_proc_cmdline
 run_test "uninstaller removes managed block and files" test_uninstaller_removes_managed_block_and_files
 run_test "uninstaller refuses partial block and preserves bashrc" test_uninstaller_refuses_partial_block_preserves_bashrc
