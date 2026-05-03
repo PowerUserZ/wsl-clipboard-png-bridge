@@ -74,18 +74,12 @@ if ! [[ "$signature_every" =~ ^[1-9][0-9]*$ ]]; then
     signature_every="3"
 fi
 
-# Bound resource use while reading clipboard bytes for signatures so an
-# unbounded stream cannot stall the daemon loop.
+# Bound resource use while hashing clipboard bytes for signatures. The
+# wl-paste read itself is separately capped by CLIPBOARD_IO_TIMEOUT.
 hash_timeout="${CLIPBOARD_HASH_TIMEOUT:-2}"
 if ! [[ "$hash_timeout" =~ ^[1-9][0-9]*$ ]]; then
     echo "wsl-clipboard-png-bridge: invalid CLIPBOARD_HASH_TIMEOUT='$hash_timeout'; using 2" >&2
     hash_timeout="2"
-fi
-
-hash_max_bytes="${CLIPBOARD_HASH_MAX_BYTES:-8388608}"
-if ! [[ "$hash_max_bytes" =~ ^[1-9][0-9]*$ ]]; then
-    echo "wsl-clipboard-png-bridge: invalid CLIPBOARD_HASH_MAX_BYTES='$hash_max_bytes'; using 8388608" >&2
-    hash_max_bytes="8388608"
 fi
 
 # Cap any single blocking clipboard IPC call (wl-paste / wl-copy / xclip).
@@ -157,7 +151,7 @@ fi
 # --- dependency check -----------------------------------------------------
 
 missing=()
-for cmd in wl-paste wl-copy xclip convert timeout mktemp flock sha256sum wc; do
+for cmd in wl-paste wl-copy xclip convert timeout mktemp flock sha256sum; do
     command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
 done
 if (( ${#missing[@]} > 0 )); then
@@ -183,32 +177,22 @@ trap 'cleanup; exit 129' HUP
 
 # --- main loop ------------------------------------------------------------
 
-# Signature = "<sha256 of first $hash_max_bytes bytes>-<total byte count>".
-# Mixing the byte count defeats prefix-only collisions where two large images
-# share an identical leading window (e.g. two 4K screenshots with the same
-# taskbar region). Prints empty string on any read failure — callers must
-# treat empty as "unknown, do not overwrite prior signature".
+# Signature = "<sha256 of full clipboard bytes>". A prior version hashed only a
+# bounded prefix and mixed in the total size. That still missed same-sized
+# screenshots whose first bytes were identical and whose changes landed after
+# the prefix window. Full-stream hashing costs a little more CPU, but exact
+# signatures are what make back-to-back screenshots reliable. Prints empty
+# string on any read failure — callers must treat empty as "unknown, do not
+# overwrite prior signature".
 #
 # Implementation notes:
-#   * `() (...)` is a subshell-function: `set +o pipefail` inside is local to
-#     this invocation and does not leak to the parent shell.
-#   * pipefail is disabled here because `head -c N` closes its stdin once it
-#     has the first N bytes, which makes tee's write to the >(...) target
-#     fail with EPIPE. With pipefail on, the whole pipeline would exit
-#     nonzero and signatures for any clipboard larger than $hash_max_bytes
-#     would always come back empty (the exact scenario we care about — a
-#     4K BMP is ~33 MiB, far larger than the 8 MiB default cap).
-#   * Single wl-paste read: tee splits the stream into a truncated copy
-#     (first $hash_max_bytes bytes → temp file → sha256) and the full stream
-#     (→ wc -c → true total size). The previous version called wl-paste
-#     twice, doubling clipboard IPC and racing on size-vs-hash drift.
-#   * `tee -p` is REQUIRED. Default tee exits immediately on a write error
-#     to any pipe; once `head -c N` closes its end of the >(...) pipe, tee
-#     would stop forwarding to wc as well, and `size` would underreport
-#     (only ~$hash_max_bytes + tee's kernel buffer). `-p` switches to
-#     `warn-nopipe` so tee logs the broken pipe to stderr but keeps
-#     streaming the rest to wc. Empirically verified with 16 MiB / 33 MiB
-#     mock streams — without -p, total size came back as ~8.4 MiB.
+#   * `() (...)` is a subshell-function so its traps and `set +o pipefail`
+#     stay local.
+#   * The stream is hashed directly; clipboard bytes are not spooled to disk.
+#   * `timeout ... wl-paste | sha256sum` would otherwise turn a timed-out
+#     partial stream into a valid-looking hash. The grouped command writes the
+#     wl-paste/timeout status to a private temp file, and the caller only
+#     accepts status 0.
 #
 # The function always exits 0 (printing nothing on failure) because callers
 # use `var=$(clipboard_signature ...)` and the parent shell has `set -e`.
@@ -216,17 +200,21 @@ trap 'cleanup; exit 129' HUP
 # the daemon — empty stdout + exit 0 is the contract callers expect.
 clipboard_signature() (
     set +o pipefail
-    local mime="$1" tmp_hash hash size
-    tmp_hash="$(mktemp 2>/dev/null)" || { echo ""; exit 0; }
-    trap 'rm -f "$tmp_hash"' EXIT
+    local mime="$1" tmp_status hash read_status
+    local empty_sha="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    tmp_status="$(mktemp 2>/dev/null)" || { echo ""; exit 0; }
+    trap 'rm -f "$tmp_status"' EXIT
 
-    size="$(timeout "$hash_timeout" timeout "$io_timeout" wl-paste -t "$mime" 2>/dev/null \
-        | tee -p >(head -c "$hash_max_bytes" >"$tmp_hash") 2>/dev/null \
-        | wc -c)"
+    hash="$(
+        {
+            timeout "$io_timeout" wl-paste -t "$mime" 2>/dev/null
+            printf "%s\n" "$?" >"$tmp_status"
+        } | timeout "$hash_timeout" sha256sum 2>/dev/null | cut -d" " -f1
+    )"
 
-    if [[ "$size" =~ ^[0-9]+$ ]] && [ "$size" -gt 0 ] && [ -s "$tmp_hash" ]; then
-        hash="$(sha256sum <"$tmp_hash" 2>/dev/null | cut -d' ' -f1)"
-        [ -n "$hash" ] && printf '%s-%s\n' "$hash" "$size"
+    read_status="$(cat "$tmp_status" 2>/dev/null || true)"
+    if [ "$read_status" = "0" ] && [ -n "$hash" ] && [ "$hash" != "$empty_sha" ]; then
+        printf '%s\n' "$hash"
     fi
     exit 0
 )

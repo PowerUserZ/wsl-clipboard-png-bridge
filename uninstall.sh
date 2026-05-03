@@ -12,23 +12,36 @@ LOCK_PATH="$HOME/.cache/${SCRIPT_NAME}.lock"
 BASHRC="$HOME/.bashrc"
 SENTINEL_START="# >>> ${SCRIPT_NAME} (managed block; do not edit) >>>"
 SENTINEL_END="# <<< ${SCRIPT_NAME} <<<"
+PROC_ROOT="${WCPB_PROC_ROOT:-/proc}"
 
 log() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m==> warning:\033[0m %s\n' "$*" >&2; }
 
+find_daemon_pids() {
+    local proc pid cmdline
+    for proc in "$PROC_ROOT"/[0-9]*; do
+        [ -r "$proc/cmdline" ] || continue
+        pid="${proc##*/}"
+        # Compare the literal argv string. pgrep/pkill -f use regex matching,
+        # so an unusual $HOME containing regex metacharacters can mis-match.
+        cmdline="$(tr '\0' ' ' <"$proc/cmdline" 2>/dev/null || true)"
+        cmdline="${cmdline% }"
+        if [ "$cmdline" = "bash $INSTALL_PATH" ]; then
+            printf '%s\n' "$pid"
+        fi
+    done
+}
+
 # Stop the daemon.
 #
 # The daemon's cmdline is exactly "bash <INSTALL_PATH>" because the script
-# starts with `#!/usr/bin/env bash`. We match that exact full cmdline with
-# `pgrep -fx` so that unrelated processes whose cmdline merely *contains*
-# "$INSTALL_PATH" — most notably the very shell running this script, which
-# at this moment has the path embedded in its own command line — are not
-# killed. A previous version used `pkill -f "$INSTALL_PATH"` and ended up
-# killing its own parent shell.
-daemon_cmdline="bash $INSTALL_PATH"
-if pgrep -fx "$daemon_cmdline" >/dev/null 2>&1; then
+# starts with `#!/usr/bin/env bash`. Use a literal /proc cmdline comparison so
+# unrelated processes whose cmdline merely contains the install path are not
+# killed, and so regex metacharacters in $HOME are not interpreted.
+mapfile -t daemon_pids < <(find_daemon_pids)
+if (( ${#daemon_pids[@]} > 0 )); then
     log "stopping daemon"
-    pkill -fx "$daemon_cmdline" || true
+    kill "${daemon_pids[@]}" || true
     sleep 0.3
 fi
 
