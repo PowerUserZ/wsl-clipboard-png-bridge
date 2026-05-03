@@ -186,8 +186,8 @@ trap 'cleanup; exit 129' HUP
 # overwrite prior signature".
 #
 # Implementation notes:
-#   * `() (...)` is a subshell-function so its traps and `set +o pipefail`
-#     stay local.
+#   * `() (...)` is a subshell-function so its traps, `set +e`, and
+#     `set +o pipefail` stay local.
 #   * The stream is hashed directly; clipboard bytes are not spooled to disk.
 #   * `timeout ... wl-paste | sha256sum` would otherwise turn a timed-out
 #     partial stream into a valid-looking hash. The grouped command writes the
@@ -199,6 +199,7 @@ trap 'cleanup; exit 129' HUP
 # A nonzero return from the substituted command would propagate and kill
 # the daemon — empty stdout + exit 0 is the contract callers expect.
 clipboard_signature() (
+    set +e
     set +o pipefail
     local mime="$1" tmp_status hash read_status
     local empty_sha="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"

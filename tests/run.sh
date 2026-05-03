@@ -115,6 +115,9 @@ case "${1:-}" in
         fi
         ;;
     -t)
+        if [ "${FAKE_WL_PASTE_READ_FAIL:-0}" = "1" ]; then
+            exit 1
+        fi
         case "${2:-}" in
             image/bmp) cat "$state/bmp" ;;
             image/png) cat "$state/png" ;;
@@ -566,13 +569,41 @@ test_same_size_same_prefix_bmp_change_republishes() {
         CLIPBOARD_WATCH_INTERVAL=0.01 \
         CLIPBOARD_IDLE_INTERVAL=0.01 \
         CLIPBOARD_SIGNATURE_EVERY=1 \
-        CLIPBOARD_HASH_MAX_BYTES=8 \
         bash "$ROOT/$SCRIPT_NAME" >"$tmp/out" 2>"$tmp/err" || status=$?
 
     assert_eq "77" "$status" "daemon controlled sleep exit" || return 1
     assert_eq "2" "$(cat "$state/wl_copy_count")" "wl-copy called for changed same-prefix image" || return 1
     assert_eq "2" "$(cat "$state/xclip_count")" "xclip called for changed same-prefix image" || return 1
     assert_eq "$(cat "$state/bmp_next")" "$(cat "$state/x11_png")" "latest PNG mirror contents" || return 1
+}
+
+test_signature_read_failure_does_not_crash() {
+    local tmp fakebin home state status
+    tmp="$(new_tmp)"
+    fakebin="$tmp/bin"
+    home="$tmp/home"
+    state="$tmp/state"
+    mkdir -p "$home" "$state"
+    make_daemon_fakebin "$fakebin"
+    printf 'image/png\n' >"$state/types"
+    printf 'png-bytes' >"$state/png"
+
+    status=0
+    PATH="$fakebin:$PATH" \
+        HOME="$home" \
+        FAKE_STATE="$state" \
+        FAKE_WL_PASTE_READ_FAIL=1 \
+        FAKE_SLEEP_LIMIT=1 \
+        WCPB_LOCK_FILE="$state/lock" \
+        CLIPBOARD_WATCH_INTERVAL=0.01 \
+        CLIPBOARD_IDLE_INTERVAL=0.01 \
+        CLIPBOARD_SIGNATURE_EVERY=1 \
+        bash "$ROOT/$SCRIPT_NAME" >"$tmp/out" 2>"$tmp/err" || status=$?
+
+    assert_eq "77" "$status" "daemon survived signature read failure" || return 1
+    if [ -f "$state/xclip_count" ]; then
+        assert_eq "0" "$(cat "$state/xclip_count")" "xclip not called after signature read failure" || return 1
+    fi
 }
 
 test_installer_detects_daemon_with_literal_proc_cmdline() {
@@ -771,6 +802,7 @@ run_test "daemon survives mktemp failure" test_mktemp_failure_does_not_crash
 run_test "MIME prefix does not false-match exact line" test_mime_prefix_does_not_false_match
 run_test "post-publish refresh prevents republish" test_post_publish_refresh_prevents_republish
 run_test "same-size same-prefix BMP change republishes" test_same_size_same_prefix_bmp_change_republishes
+run_test "signature read failure does not crash daemon" test_signature_read_failure_does_not_crash
 run_test "installer daemon check uses literal proc cmdline" test_installer_detects_daemon_with_literal_proc_cmdline
 run_test "uninstaller removes managed block and files" test_uninstaller_removes_managed_block_and_files
 run_test "uninstaller refuses partial block and preserves bashrc" test_uninstaller_refuses_partial_block_preserves_bashrc

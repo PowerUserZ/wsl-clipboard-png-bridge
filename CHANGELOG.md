@@ -13,6 +13,9 @@ project uses [Semantic Versioning](https://semver.org/).
 - Clipboard signature hashing no longer depends on `wc`; the daemon streams
   directly into `sha256sum` and separately checks the `wl-paste`/`timeout`
   status so partial timed-out reads are not cached.
+- `clipboard_signature()` now explicitly disables `errexit` inside its
+  subshell, preserving the intended "print empty and exit 0" contract when a
+  clipboard owner disappears or `wl-paste` fails during signature reads.
 - Daemon detection in `install.sh` and daemon stopping in `uninstall.sh` now
   compare `/proc/*/cmdline` literally instead of using `pgrep` / `pkill`
   regex matching. This keeps unusual home paths containing regex
@@ -29,6 +32,8 @@ project uses [Semantic Versioning](https://semver.org/).
 ### Added
 - Regression coverage for same-size/same-prefix screenshot changes and for
   literal daemon cmdline detection.
+- Regression coverage for signature-read failures so transient `wl-paste`
+  errors do not kill the daemon.
 - Regression coverage for `uninstall.sh` managed-block removal, partial-block
   refusal, installed-file cleanup, lock-file cleanup, and literal daemon
   cmdline matching.
