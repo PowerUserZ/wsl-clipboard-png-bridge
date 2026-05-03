@@ -17,6 +17,12 @@ project uses [Semantic Versioning](https://semver.org/).
   compare `/proc/*/cmdline` literally instead of using `pgrep` / `pkill`
   regex matching. This keeps unusual home paths containing regex
   metacharacters from mis-matching.
+- `install.sh` and `uninstall.sh` now preserve existing `~/.bashrc`
+  permissions when rewriting the managed block, and sentinel detection matches
+  exact lines only so ordinary user text containing sentinel strings is not
+  treated as a managed block.
+- `uninstall.sh` now refuses mismatched or duplicate managed-block sentinels
+  instead of deleting a possibly ambiguous range from `~/.bashrc`.
 - `install.sh` now checks for `tr`, which its literal `/proc` cmdline helper
   uses to normalize NUL-separated argv data.
 
@@ -26,6 +32,10 @@ project uses [Semantic Versioning](https://semver.org/).
 - Regression coverage for `uninstall.sh` managed-block removal, partial-block
   refusal, installed-file cleanup, lock-file cleanup, and literal daemon
   cmdline matching.
+- Regression coverage for preserving restrictive `.bashrc` permissions and
+  ignoring sentinel text embedded inside ordinary shell lines.
+- Regression coverage for `uninstall.sh` refusing mismatched sentinel blocks
+  while preserving the original `.bashrc`.
 
 ### Documentation
 - README now shows an immutable local-clone install path before the moving

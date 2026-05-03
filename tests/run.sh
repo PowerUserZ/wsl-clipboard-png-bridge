@@ -206,7 +206,7 @@ SH
 }
 
 test_installer_replaces_existing_block() {
-    local tmp fakebin home out err start_count end_count expected_spawn
+    local tmp fakebin home out err start_count end_count expected_spawn mode
     tmp="$(new_tmp)"
     fakebin="$tmp/bin"
     home="$tmp/home"
@@ -228,6 +228,7 @@ EOF
         printf '%s\n' "$SENTINEL_END"
         printf 'after\n'
     } >"$home/.bashrc"
+    chmod 0600 "$home/.bashrc"
 
     out="$tmp/out"
     err="$tmp/err"
@@ -239,8 +240,10 @@ EOF
     assert_contains "$home/.bashrc" "$expected_spawn" || return 1
     assert_contains "$home/.bashrc" "before" || return 1
     assert_contains "$home/.bashrc" "after" || return 1
-    start_count="$(grep -Fc "$SENTINEL_START" "$home/.bashrc")"
-    end_count="$(grep -Fc "$SENTINEL_END" "$home/.bashrc")"
+    mode="$(stat -c %a "$home/.bashrc")"
+    assert_eq "600" "$mode" "bashrc mode after installer replacement" || return 1
+    start_count="$(grep -Fxc "$SENTINEL_START" "$home/.bashrc")"
+    end_count="$(grep -Fxc "$SENTINEL_END" "$home/.bashrc")"
     assert_eq "1" "$start_count" "start sentinel count" || return 1
     assert_eq "1" "$end_count" "end sentinel count" || return 1
 }
@@ -289,6 +292,33 @@ test_installer_refuses_mismatched_blocks() {
         return 1
     fi
     assert_contains "$err" "mismatched managed block sentinels" || return 1
+}
+
+test_installer_ignores_embedded_sentinel_text() {
+    local tmp fakebin home out err start_count end_count
+    tmp="$(new_tmp)"
+    fakebin="$tmp/bin"
+    home="$tmp/home"
+    mkdir -p "$home"
+    make_installer_fakebin "$fakebin"
+    {
+        printf 'before\n'
+        printf 'echo "%s"\n' "$SENTINEL_START"
+        printf 'echo "%s"\n' "$SENTINEL_END"
+        printf 'after\n'
+    } >"$home/.bashrc"
+
+    out="$tmp/out"
+    err="$tmp/err"
+    PATH="$fakebin:$PATH" HOME="$home" bash "$ROOT/install.sh" >"$out" 2>"$err" || return 1
+
+    assert_contains "$out" "appending managed block" || return 1
+    assert_contains "$home/.bashrc" "echo \"$SENTINEL_START\"" || return 1
+    assert_contains "$home/.bashrc" "echo \"$SENTINEL_END\"" || return 1
+    start_count="$(grep -Fxc "$SENTINEL_START" "$home/.bashrc")"
+    end_count="$(grep -Fxc "$SENTINEL_END" "$home/.bashrc")"
+    assert_eq "1" "$start_count" "exact start sentinel count" || return 1
+    assert_eq "1" "$end_count" "exact end sentinel count" || return 1
 }
 
 test_success_switches_sleep_to_active_interval() {
@@ -566,7 +596,7 @@ test_installer_detects_daemon_with_literal_proc_cmdline() {
 }
 
 test_uninstaller_removes_managed_block_and_files() {
-    local tmp home procroot out err install_path lock_path
+    local tmp home procroot out err install_path lock_path mode
     tmp="$(new_tmp)"
     home="$tmp/home"
     procroot="$tmp/proc"
@@ -584,6 +614,7 @@ test_uninstaller_removes_managed_block_and_files() {
         printf '%s\n' "$SENTINEL_END"
         printf 'after\n'
     } >"$home/.bashrc"
+    chmod 0600 "$home/.bashrc"
 
     out="$tmp/out"
     err="$tmp/err"
@@ -594,6 +625,8 @@ test_uninstaller_removes_managed_block_and_files() {
     assert_contains "$out" "removing managed block" || return 1
     assert_contains "$home/.bashrc" "before" || return 1
     assert_contains "$home/.bashrc" "after" || return 1
+    mode="$(stat -c %a "$home/.bashrc")"
+    assert_eq "600" "$mode" "bashrc mode after uninstall rewrite" || return 1
     assert_not_contains "$home/.bashrc" "$SENTINEL_START" || return 1
     assert_not_contains "$home/.bashrc" "managed line" || return 1
     if [ -e "$install_path" ]; then
@@ -627,6 +660,56 @@ test_uninstaller_refuses_partial_block_preserves_bashrc() {
     assert_contains "$home/.bashrc" "before" || return 1
     assert_contains "$home/.bashrc" "$SENTINEL_START" || return 1
     assert_contains "$home/.bashrc" "after without end sentinel" || return 1
+}
+
+test_uninstaller_refuses_mismatched_blocks_preserves_bashrc() {
+    local tmp home procroot out err before after
+    tmp="$(new_tmp)"
+    home="$tmp/home"
+    procroot="$tmp/proc"
+    mkdir -p "$home" "$procroot"
+    {
+        printf 'before\n'
+        printf '%s\n' "$SENTINEL_START"
+        printf 'managed line\n'
+        printf '%s\n' "$SENTINEL_END"
+        printf '%s\n' "$SENTINEL_START"
+        printf 'after mismatched start\n'
+    } >"$home/.bashrc"
+    before="$(cat "$home/.bashrc")"
+
+    out="$tmp/out"
+    err="$tmp/err"
+    HOME="$home" WCPB_PROC_ROOT="$procroot" bash "$ROOT/uninstall.sh" >"$out" 2>"$err" || return 1
+    after="$(cat "$home/.bashrc")"
+
+    assert_contains "$err" "mismatched managed block sentinels" || return 1
+    assert_eq "$before" "$after" "bashrc after mismatched uninstall refusal" || return 1
+    assert_not_contains "$out" "removing managed block" || return 1
+}
+
+test_uninstaller_ignores_embedded_sentinel_text() {
+    local tmp home procroot out err before after
+    tmp="$(new_tmp)"
+    home="$tmp/home"
+    procroot="$tmp/proc"
+    mkdir -p "$home" "$procroot"
+    {
+        printf 'before\n'
+        printf 'echo "%s"\n' "$SENTINEL_START"
+        printf 'echo "%s"\n' "$SENTINEL_END"
+        printf 'after\n'
+    } >"$home/.bashrc"
+    before="$(cat "$home/.bashrc")"
+
+    out="$tmp/out"
+    err="$tmp/err"
+    HOME="$home" WCPB_PROC_ROOT="$procroot" bash "$ROOT/uninstall.sh" >"$out" 2>"$err" || return 1
+    after="$(cat "$home/.bashrc")"
+
+    assert_eq "$before" "$after" "bashrc with embedded sentinels after uninstall" || return 1
+    assert_not_contains "$out" "removing managed block" || return 1
+    assert_eq "" "$(cat "$err")" "uninstall stderr" || return 1
 }
 
 test_uninstaller_stops_only_literal_proc_cmdline() {
@@ -679,6 +762,7 @@ test_uninstaller_ignores_nonliteral_proc_cmdline() {
 run_test "installer replaces existing managed block" test_installer_replaces_existing_block
 run_test "installer refuses partial managed block" test_installer_refuses_partial_block
 run_test "installer refuses mismatched managed blocks" test_installer_refuses_mismatched_blocks
+run_test "installer ignores embedded sentinel text" test_installer_ignores_embedded_sentinel_text
 run_test "successful publish switches sleep to active interval" test_success_switches_sleep_to_active_interval
 run_test "xclip failure retries PNG mirror" test_xclip_failure_retries_png_mirror
 run_test "invalid env values fall back" test_invalid_env_values_fall_back
@@ -690,6 +774,8 @@ run_test "same-size same-prefix BMP change republishes" test_same_size_same_pref
 run_test "installer daemon check uses literal proc cmdline" test_installer_detects_daemon_with_literal_proc_cmdline
 run_test "uninstaller removes managed block and files" test_uninstaller_removes_managed_block_and_files
 run_test "uninstaller refuses partial block and preserves bashrc" test_uninstaller_refuses_partial_block_preserves_bashrc
+run_test "uninstaller refuses mismatched blocks and preserves bashrc" test_uninstaller_refuses_mismatched_blocks_preserves_bashrc
+run_test "uninstaller ignores embedded sentinel text" test_uninstaller_ignores_embedded_sentinel_text
 run_test "uninstaller stops only literal proc cmdline" test_uninstaller_stops_only_literal_proc_cmdline
 run_test "uninstaller ignores nonliteral proc cmdline" test_uninstaller_ignores_nonliteral_proc_cmdline
 

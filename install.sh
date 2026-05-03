@@ -113,11 +113,17 @@ escape_sed_literal() {
     printf '%s' "$1" | sed 's/[][\/.^$*]/\\&/g'
 }
 
+replace_bashrc_from_tmp() {
+    # Preserve an existing .bashrc mode, ownership, and symlink target. `install
+    # -m 0644` would silently relax a user's more restrictive permissions.
+    cp "$tmp_bashrc" "$BASHRC"
+}
+
 bashrc_start_count=0
 bashrc_end_count=0
 if [ -f "$BASHRC" ]; then
-    bashrc_start_count="$(grep -Fc "$SENTINEL_START" "$BASHRC" || true)"
-    bashrc_end_count="$(grep -Fc "$SENTINEL_END" "$BASHRC" || true)"
+    bashrc_start_count="$(grep -Fxc "$SENTINEL_START" "$BASHRC" || true)"
+    bashrc_end_count="$(grep -Fxc "$SENTINEL_END" "$BASHRC" || true)"
 fi
 
 if [ "$bashrc_start_count" -eq 1 ] && [ "$bashrc_end_count" -eq 0 ]; then
@@ -133,9 +139,9 @@ elif [ "$bashrc_start_count" -eq 1 ]; then
     tmp_bashrc="$(mktemp)"
     start_re="$(escape_sed_literal "$SENTINEL_START")"
     end_re="$(escape_sed_literal "$SENTINEL_END")"
-    sed "/$start_re/,/$end_re/d" "$BASHRC" >"$tmp_bashrc"
+    sed "/^$start_re\$/,/^$end_re\$/d" "$BASHRC" >"$tmp_bashrc"
     emit_bashrc_block >>"$tmp_bashrc"
-    install -m 0644 "$tmp_bashrc" "$BASHRC"
+    replace_bashrc_from_tmp
     rm -f "$tmp_bashrc"
     tmp_bashrc=""
 else

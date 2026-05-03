@@ -13,9 +13,21 @@ BASHRC="$HOME/.bashrc"
 SENTINEL_START="# >>> ${SCRIPT_NAME} (managed block; do not edit) >>>"
 SENTINEL_END="# <<< ${SCRIPT_NAME} <<<"
 PROC_ROOT="${WCPB_PROC_ROOT:-/proc}"
+tmp=""
 
 log() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m==> warning:\033[0m %s\n' "$*" >&2; }
+
+escape_sed_literal() {
+    printf '%s' "$1" | sed 's/[][\/.^$*]/\\&/g'
+}
+
+cleanup() {
+    if [ -n "$tmp" ]; then
+        rm -f "$tmp"
+    fi
+}
+trap cleanup EXIT
 
 find_daemon_pids() {
     local proc pid cmdline
@@ -61,8 +73,16 @@ fi
 # sentinel), a naive `sed "/START/,/END/d"` deletes from the start sentinel
 # all the way to EOF and silently destroys unrelated user content below
 # the block. Refuse to auto-remove in that case.
-if [ -f "$BASHRC" ] && grep -Fq "$SENTINEL_START" "$BASHRC"; then
-    if ! grep -Fq "$SENTINEL_END" "$BASHRC"; then
+if [ -f "$BASHRC" ]; then
+    bashrc_start_count="$(grep -Fxc "$SENTINEL_START" "$BASHRC" || true)"
+    bashrc_end_count="$(grep -Fxc "$SENTINEL_END" "$BASHRC" || true)"
+else
+    bashrc_start_count=0
+    bashrc_end_count=0
+fi
+
+if [ "$bashrc_start_count" -gt 0 ]; then
+    if [ "$bashrc_end_count" -eq 0 ]; then
         warn "found the start sentinel in $BASHRC but no matching end sentinel."
         warn "refusing to auto-remove the block to avoid deleting unrelated"
         warn "content between the start sentinel and EOF."
@@ -70,14 +90,27 @@ if [ -f "$BASHRC" ] && grep -Fq "$SENTINEL_START" "$BASHRC"; then
         warn "    $SENTINEL_START"
         warn "down to (and including) a line containing:"
         warn "    $SENTINEL_END"
+    elif [ "$bashrc_start_count" -ne "$bashrc_end_count" ]; then
+        warn "found mismatched managed block sentinels in $BASHRC."
+        warn "refusing to auto-remove the block to avoid deleting unrelated"
+        warn "shell configuration. Please inspect and edit the file by hand."
+    elif [ "$bashrc_start_count" -gt 1 ]; then
+        warn "found multiple managed blocks in $BASHRC."
+        warn "refusing to auto-remove them automatically; please inspect and"
+        warn "remove the managed blocks by hand."
     else
         log "removing managed block from $BASHRC"
         tmp="$(mktemp)"
-        trap 'rm -f "$tmp"' EXIT
         # Delete from SENTINEL_START through SENTINEL_END inclusive.
-        # Using a portable sed range with literal anchors.
-        sed "/$(printf '%s' "$SENTINEL_START" | sed 's/[][\/.^$*]/\\&/g')/,/$(printf '%s' "$SENTINEL_END" | sed 's/[][\/.^$*]/\\&/g')/d" "$BASHRC" >"$tmp"
-        install -m 0644 "$tmp" "$BASHRC"
+        # Match exact sentinel lines only; ordinary user text that merely
+        # contains the sentinel string must not be treated as a managed block.
+        start_re="$(escape_sed_literal "$SENTINEL_START")"
+        end_re="$(escape_sed_literal "$SENTINEL_END")"
+        sed "/^$start_re\$/,/^$end_re\$/d" "$BASHRC" >"$tmp"
+        # Preserve an existing .bashrc mode, ownership, and symlink target.
+        cp "$tmp" "$BASHRC"
+        rm -f "$tmp"
+        tmp=""
     fi
 fi
 
