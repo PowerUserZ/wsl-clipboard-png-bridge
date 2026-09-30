@@ -1,8 +1,10 @@
 # wsl-clipboard-png-bridge
 
-[![shellcheck](https://github.com/PowerUserZ/wsl-clipboard-png-bridge/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/PowerUserZ/wsl-clipboard-png-bridge/actions/workflows/shellcheck.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-![WSL2](https://img.shields.io/badge/WSL2-required-blue)
+[![Stars](https://img.shields.io/github/stars/PowerUserZ/wsl-clipboard-png-bridge?style=flat-square&logo=github&label=stars&color=f26b38&labelColor=1d1d22)](https://github.com/PowerUserZ/wsl-clipboard-png-bridge/stargazers)
+[![Latest release](https://img.shields.io/github/v/release/PowerUserZ/wsl-clipboard-png-bridge?style=flat-square&label=release&color=f26b38&labelColor=1d1d22)](https://github.com/PowerUserZ/wsl-clipboard-png-bridge/releases/latest)
+[![shellcheck](https://img.shields.io/github/actions/workflow/status/PowerUserZ/wsl-clipboard-png-bridge/shellcheck.yml?style=flat-square&label=shellcheck&labelColor=1d1d22)](https://github.com/PowerUserZ/wsl-clipboard-png-bridge/actions/workflows/shellcheck.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-f26b38?style=flat-square&labelColor=1d1d22)](LICENSE)
+[![WSL2 required](https://img.shields.io/badge/WSL2-required-f26b38?style=flat-square&labelColor=1d1d22)](https://learn.microsoft.com/windows/wsl/)
 
 A tiny WSL2 background daemon that converts Windows screenshots (BMP) on the
 Linux-side clipboard to PNG in real time, so tools like **Claude Code** that
